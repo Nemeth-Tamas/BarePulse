@@ -61,10 +61,10 @@
 - [X] Add sensible HID timeouts
 - [X] Add sleeping-device state
 - [X] Cache working device handle
-- [ ] Recover from disconnected/stale handle
+- [X] Recover from disconnected/stale handle
 - [X] Add decoder unit tests
 - [X] Add synthetic/captured packet tests
-- [ ] Confirm operation without SteelSeries GG/Engine
+- [X] Confirm operation without SteelSeries GG/Engine
 
 ## Milestone 4 — Real tray device status
 
@@ -87,13 +87,13 @@
 
 ## v0.1 acceptance
 
-- [ ] Starts without SteelSeries GG/Engine
-- [ ] Automatically discovers Aerox 9
-- [ ] Reads real Aerox 9 battery level
-- [ ] Detects charging state
-- [ ] Distinguishes wireless and wired operation
-- [ ] Handles sleeping state
-- [ ] Handles disconnect/reconnect
+- [X] Starts without SteelSeries GG/Engine
+- [X] Automatically discovers Aerox 9
+- [X] Reads real Aerox 9 battery level
+- [X] Detects charging state
+- [X] Distinguishes wireless and wired operation
+- [X] Handles sleeping state
+- [X] Handles disconnect/reconnect
 - [ ] Shows useful battery status in Windows tray
 - [ ] Runs with negligible idle CPU usage
 - [ ] Requires no administrator privileges
