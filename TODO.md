@@ -38,9 +38,9 @@
 - [X] Collect serial/instance identifier where available
 - [X] Create generic discovered-hardware model
 - [X] Perform discovery at startup
-- [ ] Persist discovered devices
-- [ ] Identify Aerox 9 automatically
-- [ ] Never blindly open/query unknown hardware
+- [X] Persist discovered devices
+- [X] Identify Aerox 9 automatically
+- [X] Never blindly open/query unknown hardware
 
 ## Milestone 3 — Aerox 9 local support
 
