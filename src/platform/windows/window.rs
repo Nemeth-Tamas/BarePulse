@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     io,
     mem::{size_of, zeroed},
     ptr::{null, null_mut},
@@ -9,11 +10,13 @@ use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-        PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, TranslateMessage, WM_CLOSE,
-        WM_DESTROY, WNDCLASSEXW,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, KillTimer,
+        PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetTimer, TranslateMessage,
+        WM_CLOSE, WM_DESTROY, WM_TIMER, WNDCLASSEXW,
     },
 };
+
+use crate::devices::DeviceStatus;
 
 use super::{tray, wide_null};
 
@@ -22,7 +25,42 @@ const TASKBAR_CREATED_MESSAGE_NAME: &str = "TaskbarCreated";
 
 static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
 
-pub(crate) fn run() -> io::Result<()> {
+const STATUS_TIMER_ID: usize = 1;
+
+struct WindowState {
+    statuses: Vec<DeviceStatus>,
+    refresh: Box<dyn FnMut() -> Vec<DeviceStatus>>,
+}
+
+thread_local! {
+    static WINDOW_STATE: RefCell<Option<WindowState>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn run<F>(
+    initial_statuses: Vec<DeviceStatus>,
+    poll_interval_seconds: u64,
+    refresh: F,
+) -> io::Result<()>
+where
+    F: FnMut() -> Vec<DeviceStatus> + 'static,
+{
+    WINDOW_STATE.with(|state| {
+        *state.borrow_mut() = Some(WindowState {
+            statuses: initial_statuses,
+            refresh: Box::new(refresh),
+        });
+    });
+
+    let result = run_window(poll_interval_seconds);
+
+    WINDOW_STATE.with(|state| {
+        state.borrow_mut().take();
+    });
+
+    result
+}
+
+fn run_window(poll_interval_seconds: u64) -> io::Result<()> {
     let class_name = wide_null(WINDOW_CLASS_NAME);
     let taskbar_created_name = wide_null(TASKBAR_CREATED_MESSAGE_NAME);
 
@@ -85,9 +123,56 @@ pub(crate) fn run() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
 
-    tray::add(window)?;
+    let statuses = status_snapshot();
+
+    tray::add(window, &statuses)?;
+
+    let poll_interval = poll_interval_milliseconds(poll_interval_seconds);
+
+    // SAFETY:
+    // window is our live hidden window. A null callback causes WM_TIMER messages
+    // to be delivered to its window procedure.
+    if unsafe { SetTimer(window, STATUS_TIMER_ID, poll_interval, None) } == 0 {
+        tray::delete(window);
+        return Err(io::Error::last_os_error());
+    }
 
     message_loop()
+}
+
+fn status_snapshot() -> Vec<DeviceStatus> {
+    WINDOW_STATE.with(|state| {
+        state
+            .borrow()
+            .as_ref()
+            .map(|state| state.statuses.clone())
+            .unwrap_or_default()
+    })
+}
+
+fn refresh_status(window: HWND) -> io::Result<()> {
+    WINDOW_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+
+        let state = state
+            .as_mut()
+            .ok_or_else(|| io::Error::other("BarePulse window state is unavailable"))?;
+
+        let refreshed = (state.refresh)();
+
+        if refreshed == state.statuses {
+            return Ok(());
+        }
+
+        tray::update(window, &refreshed)?;
+        state.statuses = refreshed;
+
+        Ok(())
+    })
+}
+
+fn poll_interval_milliseconds(seconds: u64) -> u32 {
+    seconds.saturating_mul(1000).clamp(1, u64::from(u32::MAX)) as u32
 }
 
 fn message_loop() -> io::Result<()> {
@@ -127,7 +212,8 @@ unsafe extern "system" fn window_proc(
     let taskbar_created_message = TASKBAR_CREATED_MESSAGE.load(Ordering::Relaxed);
 
     if taskbar_created_message != 0 && message == taskbar_created_message {
-        let _ = tray::add(window);
+        let statuses = status_snapshot();
+        let _ = tray::add(window, &statuses);
         return 0;
     }
 
@@ -143,6 +229,13 @@ unsafe extern "system" fn window_proc(
         }
 
         WM_DESTROY => {
+            // SAFETY:
+            // This timer belongs to our hidden window and no longer needs to fire
+            // once the window is being destroyed.
+            unsafe {
+                KillTimer(window, STATUS_TIMER_ID);
+            }
+
             tray::delete(window);
 
             // SAFETY:
@@ -155,14 +248,36 @@ unsafe extern "system" fn window_proc(
             0
         }
 
+        WM_TIMER if w_param == STATUS_TIMER_ID => {
+            if let Err(error) = refresh_status(window) {
+                #[cfg(debug_assertions)]
+                eprintln!("BarePulse tray refresh failed: {error}");
+            }
+
+            0
+        }
+
         tray::CALLBACK_MESSAGE => {
-            if let Ok(tray::Action::Exit) = tray::handle_callback(window, l_param) {
-                // SAFETY:
-                // window is our valid hidden owner window. Destroying it triggers
-                // WM_DESTROY, which removes the tray icon and terminates the loop.
-                unsafe {
-                    DestroyWindow(window);
+            let statuses = status_snapshot();
+
+            match tray::handle_callback(window, l_param, &statuses) {
+                Ok(tray::Action::Refresh) => {
+                    if let Err(error) = refresh_status(window) {
+                        #[cfg(debug_assertions)]
+                        eprintln!("BarePulse manual refresh failed: {error}");
+                    }
                 }
+
+                Ok(tray::Action::Exit) => {
+                    // SAFETY:
+                    // window is our valid hidden owner window. Destroying it triggers
+                    // WM_DESTROY, which removes the tray icon and terminates the loop.
+                    unsafe {
+                        DestroyWindow(window);
+                    }
+                }
+
+                Ok(tray::Action::None) | Err(_) => {}
             }
 
             0

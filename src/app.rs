@@ -8,7 +8,7 @@ use crate::{
         ConfigStore,
         model::{Config, DeviceTransport, DiscoveredDevice},
     },
-    devices::{self, BatteryPoll, BatteryProtocol, DeviceSession, RecognizedDevice},
+    devices::{self, BatteryPoll, BatteryProtocol, DeviceSession, DeviceStatus, RecognizedDevice},
     discovery::{self, Transport},
     platform,
 };
@@ -29,18 +29,22 @@ pub(crate) fn run() -> io::Result<()> {
     #[cfg(debug_assertions)]
     {
         log_discovery(&discovered_hardware, &recognized_devices);
-        probe_device_sessions(&mut device_sessions);
 
         if reconnect_test_requested() {
             run_reconnect_test(&mut device_sessions);
         }
     }
 
-    let result = platform::windows::run();
+    let initial_statuses = poll_device_statuses(&mut device_sessions);
 
-    drop(device_sessions);
+    #[cfg(debug_assertions)]
+    log_device_sessions(&device_sessions, &initial_statuses);
 
-    result
+    let poll_interval_seconds = config.settings.poll_interval_seconds;
+
+    platform::windows::run(initial_statuses, poll_interval_seconds, move || {
+        poll_device_statuses(&mut device_sessions)
+    })
 }
 
 fn persist_recognized_devices(
@@ -118,18 +122,22 @@ fn reconnect_test_requested() -> bool {
     env::var_os("BAREPULSE_RECONNECT_TEST").is_some()
 }
 
+fn poll_device_statuses(sessions: &mut [DeviceSession]) -> Vec<DeviceStatus> {
+    sessions
+        .iter_mut()
+        .map(DeviceSession::poll_status)
+        .collect()
+}
+
 #[cfg(debug_assertions)]
-fn probe_device_sessions(sessions: &mut [DeviceSession]) {
-    for session in sessions {
+fn log_device_sessions(sessions: &[DeviceSession], statuses: &[DeviceStatus]) {
+    for (session, status) in sessions.iter().zip(statuses) {
         let report_lengths = session.report_lengths();
-        let device_name = session.device().name;
 
         eprintln!(
             "BarePulse HID open: {} input={} output={} feature={}",
-            device_name, report_lengths.input, report_lengths.output, report_lengths.feature,
+            status.name, report_lengths.input, report_lengths.output, report_lengths.feature,
         );
-
-        let status = session.poll_status();
 
         eprintln!(
             "BarePulse status: {} mode={:?} connection={:?} battery={:?}",
