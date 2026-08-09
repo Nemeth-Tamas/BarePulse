@@ -1,3 +1,5 @@
+pub(crate) mod model;
+
 use std::{
     env,
     fs::{self, OpenOptions},
@@ -6,66 +8,11 @@ use std::{
     process,
 };
 
-use serde::{Deserialize, Serialize};
-
 use crate::platform::windows;
 
+use model::Config;
+
 const CONFIG_FILE_NAME: &str = "barepulse.toml";
-const CONFIG_SCHEMA: u32 = 1;
-const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 300;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Config {
-    pub(crate) schema: u32,
-    pub(crate) settings: Settings,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Settings {
-    pub(crate) poll_interval_seconds: u64,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            schema: CONFIG_SCHEMA,
-            settings: Settings::default(),
-        }
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
-        }
-    }
-}
-
-impl Config {
-    fn validate(&self) -> io::Result<()> {
-        if self.schema != CONFIG_SCHEMA {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "unsupported BarePulse config schema {}; expected {}",
-                    self.schema, CONFIG_SCHEMA
-                ),
-            ));
-        }
-
-        if self.settings.poll_interval_seconds == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "poll_interval_seconds must be greater than zero",
-            ));
-        }
-
-        Ok(())
-    }
-}
 
 pub(crate) struct ConfigStore {
     path: PathBuf,

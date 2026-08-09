@@ -22,7 +22,7 @@
 - [X] Add configuration schema/version
 - [X] Add atomic configuration writes
 - [X] Add basic application settings
-- [ ] Add discovered-device persistence
+- [X] Add discovered-device persistence
 - [X] Preserve portable-first layout
 
 ## Milestone 2 — Windows HID discovery
