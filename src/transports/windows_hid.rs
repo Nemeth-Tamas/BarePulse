@@ -1,7 +1,9 @@
 use std::{
+    ffi::c_void,
     io,
-    mem::{size_of, zeroed},
+    mem::{size_of, size_of_val, zeroed},
     ptr::{null, null_mut},
+    slice,
 };
 
 use windows_sys::{
@@ -9,15 +11,21 @@ use windows_sys::{
         Devices::{
             DeviceAndDriverInstallation::{
                 DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, HDEVINFO, SP_DEVICE_INTERFACE_DATA,
-                SP_DEVINFO_DATA, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces,
-                SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW,
+                SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA, SetupDiDestroyDeviceInfoList,
+                SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW,
                 SetupDiGetDeviceInterfaceDetailW,
             },
-            HumanInterfaceDevice::HidD_GetHidGuid,
+            HumanInterfaceDevice::{
+                HIDD_ATTRIBUTES, HIDP_CAPS, HidD_FreePreparsedData, HidD_GetAttributes,
+                HidD_GetHidGuid, HidD_GetPreparsedData, HidD_GetProductString,
+                HidD_GetSerialNumberString, HidP_GetCaps,
+            },
         },
         Foundation::{
-            ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_ITEMS, GetLastError, INVALID_HANDLE_VALUE,
+            CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_ITEMS, GetLastError, HANDLE,
+            INVALID_HANDLE_VALUE,
         },
+        Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
     },
     core::GUID,
 };
@@ -25,6 +33,32 @@ use windows_sys::{
 use crate::discovery::{DiscoveredHardware, Transport};
 
 struct DeviceInfoSet(HDEVINFO);
+
+const HIDP_STATUS_SUCCESS: i32 = 0x0011_0000;
+const HID_STRING_CAPACITY: usize = 256;
+
+struct OwnedHandle(HANDLE);
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        // SAFETY:
+        // This handle was returned successfully by CreateFileW and is owned
+        // exclusively by this wrapper.
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+#[derive(Default)]
+struct HidMetadata {
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
+    usage_page: Option<u16>,
+    usage: Option<u16>,
+    product_string: Option<String>,
+    serial_number: Option<String>,
+}
 
 impl Drop for DeviceInfoSet {
     fn drop(&mut self) {
@@ -100,8 +134,14 @@ pub(crate) fn enumerate() -> io::Result<Vec<DiscoveredHardware>> {
             return Err(io::Error::from_raw_os_error(error as i32));
         }
 
-        if let Some(device) = inspect_interface(device_info_set.0, &interface_data)? {
-            devices.push(device);
+        match inspect_interface(device_info_set.0, &interface_data) {
+            Ok(Some(device)) => devices.push(device),
+            Ok(None) => {}
+
+            Err(error) => {
+                #[cfg(debug_assertions)]
+                eprintln!("BarePulse discovery: skipping HID interface {index}: {error}");
+            }
         }
 
         index += 1;
@@ -120,26 +160,67 @@ fn inspect_interface(
     let mut device_info_data: SP_DEVINFO_DATA = unsafe { zeroed() };
     device_info_data.cbSize = size_of::<SP_DEVINFO_DATA>() as u32;
 
-    // We deliberately do not request the device-interface path here.
-    //
-    // Calling with a null detail buffer causes ERROR_INSUFFICIENT_BUFFER,
-    // while SetupAPI still fills device_info_data for the backing PnP device.
+    let device_path = read_device_path(device_info_set, interface_data, &mut device_info_data)?;
+
+    let Some(instance_id) = read_instance_id(device_info_set, &device_info_data)? else {
+        return Ok(None);
+    };
+
+    let parsed_vendor_id = parse_hex_field_u16(&instance_id, "vid_");
+    let parsed_product_id = parse_hex_field_u16(&instance_id, "pid_");
+    let interface_number = parse_hex_field_u32(&instance_id, "mi_");
+
+    let metadata = match read_hid_metadata(&device_path) {
+        Ok(metadata) => metadata,
+
+        Err(error) => {
+            #[cfg(debug_assertions)]
+            eprintln!("BarePulse discovery: metadata unavailable for {instance_id}: {error}");
+
+            HidMetadata::default()
+        }
+    };
+
+    Ok(Some(DiscoveredHardware {
+        transport: Transport::UsbHid,
+        hardware_key: instance_id,
+        device_path,
+        vendor_id: metadata.vendor_id.or(parsed_vendor_id),
+        product_id: metadata.product_id.or(parsed_product_id),
+        interface_number,
+        usage_page: metadata.usage_page,
+        usage: metadata.usage,
+        product_string: metadata.product_string,
+        serial_number: metadata.serial_number,
+    }))
+}
+
+fn read_device_path(
+    device_info_set: HDEVINFO,
+    interface_data: &SP_DEVICE_INTERFACE_DATA,
+    device_info_data: &mut SP_DEVINFO_DATA,
+) -> io::Result<String> {
+    let mut required_size = 0;
+
+    // First call obtains the required variable-length detail-buffer size.
+    // It is expected to fail with ERROR_INSUFFICIENT_BUFFER.
     // SAFETY:
-    // All supplied structures belong to the current device information set.
+    // The device information set and interface data are valid enumeration
+    // results. device_info_data has the required cbSize initialized.
     let result = unsafe {
         SetupDiGetDeviceInterfaceDetailW(
             device_info_set,
             interface_data,
             null_mut(),
             0,
-            null_mut(),
-            &mut device_info_data,
+            &mut required_size,
+            device_info_data,
         )
     };
 
     if result == 0 {
         // SAFETY:
-        // Reads the error produced by the immediately preceding SetupAPI call.
+        // Reads the error generated by the immediately preceding SetupAPI call.
         let error = unsafe { GetLastError() };
 
         if error != ERROR_INSUFFICIENT_BUFFER {
@@ -147,21 +228,213 @@ fn inspect_interface(
         }
     }
 
-    let Some(instance_id) = read_instance_id(device_info_set, &device_info_data)? else {
-        return Ok(None);
+    if required_size < size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SetupAPI returned an undersized HID interface-detail buffer",
+        ));
+    }
+
+    // Vec<usize> provides sufficient native alignment for the SetupAPI
+    // structure while still letting us allocate its variable byte length.
+    let storage_elements = (required_size as usize).div_ceil(size_of::<usize>());
+
+    let mut storage = vec![0usize; storage_elements];
+
+    let detail_data = storage
+        .as_mut_ptr()
+        .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
+
+    // SAFETY:
+    // storage is large enough for required_size bytes and naturally aligned
+    // for SP_DEVICE_INTERFACE_DETAIL_DATA_W.
+    unsafe {
+        (*detail_data).cbSize = size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+    }
+
+    // SAFETY:
+    // detail_data points to a writable buffer of at least required_size bytes.
+    // SetupAPI will populate the device path and refresh device_info_data.
+    let result = unsafe {
+        SetupDiGetDeviceInterfaceDetailW(
+            device_info_set,
+            interface_data,
+            detail_data,
+            required_size,
+            null_mut(),
+            device_info_data,
+        )
     };
 
-    let vendor_id = parse_hex_field_u16(&instance_id, "vid_");
-    let product_id = parse_hex_field_u16(&instance_id, "pid_");
-    let interface_number = parse_hex_field_u32(&instance_id, "mi_");
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
 
-    Ok(Some(DiscoveredHardware {
-        transport: Transport::UsbHid,
-        hardware_key: instance_id,
+    let path_offset = std::mem::offset_of!(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath);
+
+    let path_bytes = required_size as usize - path_offset;
+    let path_capacity = path_bytes / size_of::<u16>();
+
+    // SAFETY:
+    // DevicePath begins inside the variable-sized buffer populated by SetupAPI.
+    // path_capacity is derived from that buffer's reported byte size.
+    let path = unsafe { slice::from_raw_parts((*detail_data).DevicePath.as_ptr(), path_capacity) };
+
+    decode_utf16_buffer(path).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SetupAPI returned an empty HID device path",
+        )
+    })
+}
+
+fn read_hid_metadata(device_path: &str) -> io::Result<HidMetadata> {
+    let handle = open_metadata_handle(device_path)?;
+
+    // SAFETY:
+    // HIDD_ATTRIBUTES is an output structure whose Size field must be
+    // initialized before HidD_GetAttributes.
+    let mut attributes: HIDD_ATTRIBUTES = unsafe { zeroed() };
+    attributes.Size = size_of::<HIDD_ATTRIBUTES>() as u32;
+
+    let (vendor_id, product_id) = if unsafe { HidD_GetAttributes(handle.0, &mut attributes) } {
+        (Some(attributes.VendorID), Some(attributes.ProductID))
+    } else {
+        (None, None)
+    };
+
+    let (usage_page, usage) = read_collection_usage(handle.0).unwrap_or((None, None));
+
+    Ok(HidMetadata {
         vendor_id,
         product_id,
-        interface_number,
-    }))
+        usage_page,
+        usage,
+        product_string: read_product_string(handle.0),
+        serial_number: read_serial_number(handle.0),
+    })
+}
+
+fn open_metadata_handle(device_path: &str) -> io::Result<OwnedHandle> {
+    let path = wide_null(device_path);
+
+    // SAFETY:
+    // path is a valid null-terminated HID interface path supplied by SetupAPI.
+    // Desired access is zero because discovery only needs standard metadata.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            null(),
+            OPEN_EXISTING,
+            0,
+            null_mut(),
+        )
+    };
+
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(OwnedHandle(handle))
+}
+
+fn read_collection_usage(handle: HANDLE) -> Option<(Option<u16>, Option<u16>)> {
+    let mut preparsed_data = 0isize;
+
+    // SAFETY:
+    // handle is an open HID top-level collection. The HID runtime owns the
+    // returned preparsed-data allocation until HidD_FreePreparsedData.
+    let got_preparsed_data = unsafe { HidD_GetPreparsedData(handle, &mut preparsed_data) };
+
+    if !got_preparsed_data {
+        return None;
+    }
+
+    // SAFETY:
+    // HIDP_CAPS is an output structure populated by HidP_GetCaps.
+    let mut capabilities: HIDP_CAPS = unsafe { zeroed() };
+
+    // SAFETY:
+    // preparsed_data was returned successfully by HidD_GetPreparsedData.
+    let status = unsafe { HidP_GetCaps(preparsed_data, &mut capabilities) };
+
+    // SAFETY:
+    // preparsed_data is the allocation returned by HidD_GetPreparsedData and
+    // must be released exactly once.
+    unsafe {
+        HidD_FreePreparsedData(preparsed_data);
+    }
+
+    if status != HIDP_STATUS_SUCCESS {
+        return None;
+    }
+
+    Some((Some(capabilities.UsagePage), Some(capabilities.Usage)))
+}
+
+fn read_product_string(handle: HANDLE) -> Option<String> {
+    let mut buffer = [0u16; HID_STRING_CAPACITY];
+
+    // SAFETY:
+    // buffer is writable and its byte length is supplied exactly.
+    let got_product_string = unsafe {
+        HidD_GetProductString(
+            handle,
+            buffer.as_mut_ptr().cast::<c_void>(),
+            size_of_val(&buffer) as u32,
+        )
+    };
+
+    if !got_product_string {
+        return None;
+    }
+
+    decode_utf16_buffer(&buffer)
+}
+
+fn read_serial_number(handle: HANDLE) -> Option<String> {
+    let mut buffer = [0u16; HID_STRING_CAPACITY];
+
+    // SAFETY:
+    // buffer is writable and its byte length is supplied exactly.
+    let got_serial_number = unsafe {
+        HidD_GetSerialNumberString(
+            handle,
+            buffer.as_mut_ptr().cast::<c_void>(),
+            size_of_val(&buffer) as u32,
+        )
+    };
+
+    if !got_serial_number {
+        return None;
+    }
+
+    decode_utf16_buffer(&buffer)
+}
+
+fn decode_utf16_buffer(buffer: &[u16]) -> Option<String> {
+    let length = buffer
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(buffer.len());
+
+    if length == 0 {
+        return None;
+    }
+
+    let value = String::from_utf16_lossy(&buffer[..length]);
+
+    if value.trim().is_empty() {
+        return None;
+    }
+
+    Some(value)
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(Some(0)).collect()
 }
 
 fn read_instance_id(
@@ -254,6 +527,21 @@ fn parse_hex_field(value: &str, field: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_null_terminated_utf16() {
+        let buffer = [
+            b'A' as u16,
+            b'e' as u16,
+            b'r' as u16,
+            b'o' as u16,
+            b'x' as u16,
+            0,
+            b'X' as u16,
+        ];
+
+        assert_eq!(decode_utf16_buffer(&buffer).as_deref(), Some("Aerox"));
+    }
 
     #[test]
     fn parses_usb_hid_identity_fields() {

@@ -26,7 +26,7 @@ fn log_discovery(devices: &[discovery::DiscoveredHardware]) {
         .filter(|device| device.vendor_id == Some(0x1038))
     {
         eprintln!(
-            "  SteelSeries {:?}: VID={:04X} PID={} interface={:?} key={}",
+            "  SteelSeries {:?}: VID={:04X} PID={} interface={:?} usage={:?}:{:?} product={:?} serial={:?} key={}",
             device.transport,
             device.vendor_id.unwrap_or_default(),
             device
@@ -34,6 +34,10 @@ fn log_discovery(devices: &[discovery::DiscoveredHardware]) {
                 .map(|value| format!("{value:04X}"))
                 .unwrap_or_else(|| "unknown".to_string()),
             device.interface_number,
+            device.usage_page,
+            device.usage,
+            device.product_string,
+            device.serial_number,
             device.hardware_key,
         );
     }

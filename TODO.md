@@ -32,10 +32,10 @@
 - [X] Collect vendor ID
 - [X] Collect product ID
 - [X] Collect interface number
-- [ ] Collect usage page
-- [ ] Collect usage
-- [ ] Collect product string
-- [ ] Collect serial/instance identifier where available
+- [X] Collect usage page
+- [X] Collect usage
+- [X] Collect product string
+- [X] Collect serial/instance identifier where available
 - [X] Create generic discovered-hardware model
 - [X] Perform discovery at startup
 - [ ] Persist discovered devices
