@@ -22,8 +22,8 @@ use windows_sys::{
             },
         },
         Foundation::{
-            CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_ITEMS, GetLastError, HANDLE,
-            INVALID_HANDLE_VALUE,
+            CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_ITEMS, GENERIC_READ,
+            GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
         },
         Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
     },
@@ -38,6 +38,38 @@ const HIDP_STATUS_SUCCESS: i32 = 0x0011_0000;
 const HID_STRING_CAPACITY: usize = 256;
 
 struct OwnedHandle(HANDLE);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HidReportLengths {
+    pub(crate) input: u16,
+    pub(crate) output: u16,
+    pub(crate) feature: u16,
+}
+
+pub(crate) struct HidDevice {
+    _handle: OwnedHandle,
+    report_lengths: HidReportLengths,
+}
+
+impl HidDevice {
+    pub(crate) fn open(device_path: &str) -> io::Result<Self> {
+        let handle = open_handle(device_path, GENERIC_READ | GENERIC_WRITE)?;
+        let capabilities = read_capabilities(handle.0)?;
+
+        Ok(Self {
+            _handle: handle,
+            report_lengths: HidReportLengths {
+                input: capabilities.InputReportByteLength,
+                output: capabilities.OutputReportByteLength,
+                feature: capabilities.FeatureReportByteLength,
+            },
+        })
+    }
+
+    pub(crate) const fn report_lengths(&self) -> HidReportLengths {
+        self.report_lengths
+    }
+}
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
@@ -316,15 +348,20 @@ fn read_hid_metadata(device_path: &str) -> io::Result<HidMetadata> {
 }
 
 fn open_metadata_handle(device_path: &str) -> io::Result<OwnedHandle> {
+    open_handle(device_path, 0)
+}
+
+fn open_handle(device_path: &str, desired_access: u32) -> io::Result<OwnedHandle> {
     let path = wide_null(device_path);
 
     // SAFETY:
     // path is a valid null-terminated HID interface path supplied by SetupAPI.
-    // Desired access is zero because discovery only needs standard metadata.
+    // The handle is opened with sharing enabled so BarePulse can coexist with
+    // other software using the same HID collection.
     let handle = unsafe {
         CreateFileW(
             path.as_ptr(),
-            0,
+            desired_access,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             null(),
             OPEN_EXISTING,
@@ -341,6 +378,12 @@ fn open_metadata_handle(device_path: &str) -> io::Result<OwnedHandle> {
 }
 
 fn read_collection_usage(handle: HANDLE) -> Option<(Option<u16>, Option<u16>)> {
+    let capabilities = read_capabilities(handle).ok()?;
+
+    Some((Some(capabilities.UsagePage), Some(capabilities.Usage)))
+}
+
+fn read_capabilities(handle: HANDLE) -> io::Result<HIDP_CAPS> {
     let mut preparsed_data = 0isize;
 
     // SAFETY:
@@ -349,7 +392,7 @@ fn read_collection_usage(handle: HANDLE) -> Option<(Option<u16>, Option<u16>)> {
     let got_preparsed_data = unsafe { HidD_GetPreparsedData(handle, &mut preparsed_data) };
 
     if !got_preparsed_data {
-        return None;
+        return Err(io::Error::last_os_error());
     }
 
     // SAFETY:
@@ -368,10 +411,13 @@ fn read_collection_usage(handle: HANDLE) -> Option<(Option<u16>, Option<u16>)> {
     }
 
     if status != HIDP_STATUS_SUCCESS {
-        return None;
+        return Err(io::Error::other(format!(
+            "HidP_GetCaps failed with status 0x{:08X}",
+            status as u32
+        )));
     }
 
-    Some((Some(capabilities.UsagePage), Some(capabilities.Usage)))
+    Ok(capabilities)
 }
 
 fn read_product_string(handle: HANDLE) -> Option<String> {

@@ -8,6 +8,7 @@ use crate::{
     devices::{self, RecognizedDevice},
     discovery::{self, Transport},
     platform,
+    transports::windows_hid,
 };
 
 pub(crate) fn run() -> io::Result<()> {
@@ -22,7 +23,10 @@ pub(crate) fn run() -> io::Result<()> {
     }
 
     #[cfg(debug_assertions)]
-    log_discovery(&discovered_hardware, &recognized_devices);
+    {
+        log_discovery(&discovered_hardware, &recognized_devices);
+        probe_hid_transports(&recognized_devices);
+    }
 
     platform::windows::run()
 }
@@ -72,6 +76,29 @@ fn to_config_device(recognized: &RecognizedDevice) -> DiscoveredDevice {
         serial_number: recognized.hardware.serial_number.clone(),
         profile: Some(recognized.profile.to_string()),
         enabled: true,
+    }
+}
+
+#[cfg(debug_assertions)]
+fn probe_hid_transports(devices: &[RecognizedDevice]) {
+    for device in devices {
+        match windows_hid::HidDevice::open(&device.hardware.device_path) {
+            Ok(hid_device) => {
+                let report_lengths = hid_device.report_lengths();
+
+                eprintln!(
+                    "BarePulse HID open: {} input={} output={} feature={}",
+                    device.name,
+                    report_lengths.input,
+                    report_lengths.output,
+                    report_lengths.feature,
+                );
+            }
+
+            Err(error) => {
+                eprintln!("BarePulse HID open failed: {}: {error}", device.name);
+            }
+        }
     }
 }
 

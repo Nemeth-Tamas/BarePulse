@@ -45,8 +45,8 @@
 ## Milestone 3 — Aerox 9 local support
 
 - [ ] Add local Aerox 9 device profile
-- [ ] Add raw Windows HID transport
-- [ ] Open correct SteelSeries HID interface
+- [X] Add raw Windows HID transport
+- [X] Open correct SteelSeries HID interface
 - [ ] Implement battery request transport
 - [ ] Implement SteelSeries Aerox/Prime decoder
 - [ ] Support wireless PID `0x1858`
