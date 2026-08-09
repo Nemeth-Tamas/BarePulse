@@ -27,17 +27,17 @@
 
 ## Milestone 2 — Windows HID discovery
 
-- [ ] Add raw SetupAPI/HID discovery using `windows-sys`
-- [ ] Enumerate HID interfaces
-- [ ] Collect vendor ID
-- [ ] Collect product ID
-- [ ] Collect interface number
+- [X] Add raw SetupAPI/HID discovery using `windows-sys`
+- [X] Enumerate HID interfaces
+- [X] Collect vendor ID
+- [X] Collect product ID
+- [X] Collect interface number
 - [ ] Collect usage page
 - [ ] Collect usage
 - [ ] Collect product string
 - [ ] Collect serial/instance identifier where available
-- [ ] Create generic discovered-hardware model
-- [ ] Perform discovery at startup
+- [X] Create generic discovered-hardware model
+- [X] Perform discovery at startup
 - [ ] Persist discovered devices
 - [ ] Identify Aerox 9 automatically
 - [ ] Never blindly open/query unknown hardware
