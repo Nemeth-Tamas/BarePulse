@@ -1,5 +1,5 @@
 use crate::{
-    devices::{BatteryProtocol, RecognizedDevice},
+    devices::{BatteryProtocol, ConnectionMode, RecognizedDevice},
     discovery::{DiscoveredHardware, Transport},
 };
 
@@ -27,9 +27,11 @@ pub(super) fn recognize(hardware: &DiscoveredHardware) -> Option<RecognizedDevic
         return None;
     }
 
-    let battery_command = match hardware.product_id {
-        Some(WIRELESS_PRODUCT_ID) => WIRELESS_BATTERY_COMMAND,
-        Some(WIRED_PRODUCT_ID) => WIRED_BATTERY_COMMAND,
+    let (battery_command, connection_mode) = match hardware.product_id {
+        Some(WIRELESS_PRODUCT_ID) => (WIRELESS_BATTERY_COMMAND, ConnectionMode::Wireless),
+
+        Some(WIRED_PRODUCT_ID) => (WIRED_BATTERY_COMMAND, ConnectionMode::Wired),
+
         _ => return None,
     };
 
@@ -46,6 +48,7 @@ pub(super) fn recognize(hardware: &DiscoveredHardware) -> Option<RecognizedDevic
     Some(RecognizedDevice {
         profile: PROFILE_ID,
         name: DEVICE_NAME,
+        connection_mode,
         battery_protocol: BatteryProtocol::SteelSeriesAeroxPrime {
             command: battery_command,
         },
@@ -79,6 +82,7 @@ mod tests {
 
         assert_eq!(device.profile, PROFILE_ID);
         assert_eq!(device.name, DEVICE_NAME);
+        assert_eq!(device.connection_mode, ConnectionMode::Wired);
         assert_eq!(
             device.battery_protocol,
             BatteryProtocol::SteelSeriesAeroxPrime {
@@ -94,6 +98,7 @@ mod tests {
 
         assert_eq!(device.profile, PROFILE_ID);
         assert_eq!(device.name, DEVICE_NAME);
+        assert_eq!(device.connection_mode, ConnectionMode::Wireless);
         assert_eq!(
             device.battery_protocol,
             BatteryProtocol::SteelSeriesAeroxPrime {

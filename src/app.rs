@@ -129,29 +129,12 @@ fn probe_device_sessions(sessions: &mut [DeviceSession]) {
             device_name, report_lengths.input, report_lengths.output, report_lengths.feature,
         );
 
-        let command = match session.device().battery_protocol {
-            BatteryProtocol::SteelSeriesAeroxPrime { command } => command,
-        };
+        let status = session.poll_status();
 
-        match session.query_battery() {
-            Ok(BatteryPoll::Reading(reading)) => {
-                eprintln!(
-                    "BarePulse battery: {} command=0x{command:02X} level={}% charging={}",
-                    device_name, reading.level, reading.charging,
-                );
-            }
-
-            Ok(BatteryPoll::Sleeping) => {
-                eprintln!(
-                    "BarePulse battery: {} command=0x{command:02X} sleeping",
-                    device_name
-                );
-            }
-
-            Err(error) => {
-                eprintln!("BarePulse battery query failed: {}: {error}", device_name);
-            }
-        }
+        eprintln!(
+            "BarePulse status: {} mode={:?} connection={:?} battery={:?}",
+            status.name, status.mode, status.connection, status.battery,
+        );
     }
 }
 
@@ -271,6 +254,7 @@ mod tests {
         RecognizedDevice {
             profile: "steelseries.aerox9",
             name: "SteelSeries Aerox 9 Wireless",
+            connection_mode: devices::ConnectionMode::Wired,
             hardware: discovery::DiscoveredHardware {
                 transport: Transport::UsbHid,
                 hardware_key: "test-aerox".to_string(),

@@ -68,9 +68,9 @@
 
 ## Milestone 4 — Real tray device status
 
-- [ ] Add generic `DeviceStatus`
-- [ ] Add generic connection state
-- [ ] Add generic battery state
+- [X] Add generic `DeviceStatus`
+- [X] Add generic connection state
+- [X] Add generic battery state
 - [ ] Display real Aerox battery in tooltip
 - [ ] Display wireless/wired connection state
 - [ ] Display sleeping/disconnected state

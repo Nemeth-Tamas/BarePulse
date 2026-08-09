@@ -9,7 +9,9 @@ use crate::{
     transports::windows_hid::{HidDevice, HidReportLengths},
 };
 
-use super::{BatteryProtocol, RecognizedDevice, recognize};
+use super::{
+    BatteryProtocol, BatteryState, ConnectionState, DeviceStatus, RecognizedDevice, recognize,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BatteryPoll {
@@ -20,13 +22,18 @@ pub(crate) enum BatteryPoll {
 pub(crate) struct DeviceSession {
     device: RecognizedDevice,
     hid_device: HidDevice,
+    last_battery: BatteryState,
 }
 
 impl DeviceSession {
     pub(crate) fn open(device: RecognizedDevice) -> io::Result<Self> {
         let hid_device = HidDevice::open(&device.hardware.device_path)?;
 
-        Ok(Self { device, hid_device })
+        Ok(Self {
+            device,
+            hid_device,
+            last_battery: BatteryState::Unknown,
+        })
     }
 
     pub(crate) fn device(&self) -> &RecognizedDevice {
@@ -35,6 +42,39 @@ impl DeviceSession {
 
     pub(crate) const fn report_lengths(&self) -> HidReportLengths {
         self.hid_device.report_lengths()
+    }
+
+    pub(crate) fn poll_status(&mut self) -> DeviceStatus {
+        let connection = match self.query_battery() {
+            Ok(BatteryPoll::Reading(reading)) => {
+                self.last_battery = if reading.charging {
+                    BatteryState::Charging(reading.level)
+                } else {
+                    BatteryState::Level(reading.level)
+                };
+
+                ConnectionState::Connected
+            }
+
+            Ok(BatteryPoll::Sleeping) => ConnectionState::Sleeping,
+
+            Err(error) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "BarePulse status: {} poll failed: {error}",
+                    self.device.name
+                );
+
+                ConnectionState::Disconnected
+            }
+        };
+
+        DeviceStatus {
+            name: self.device.name.to_string(),
+            mode: self.device.connection_mode,
+            connection,
+            battery: self.last_battery,
+        }
     }
 
     pub(crate) fn query_battery(&mut self) -> io::Result<BatteryPoll> {
@@ -189,6 +229,11 @@ mod tests {
         RecognizedDevice {
             profile: "steelseries.aerox9",
             name: "SteelSeries Aerox 9 Wireless",
+            connection_mode: if product_id == 0x1858 {
+                crate::devices::ConnectionMode::Wireless
+            } else {
+                crate::devices::ConnectionMode::Wired
+            },
             battery_protocol: BatteryProtocol::SteelSeriesAeroxPrime {
                 command: if product_id == 0x1858 { 0xD2 } else { 0x92 },
             },
