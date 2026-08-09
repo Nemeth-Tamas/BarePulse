@@ -5,7 +5,7 @@ use crate::{
         ConfigStore,
         model::{Config, DeviceTransport, DiscoveredDevice},
     },
-    devices::{self, BatteryProtocol, DeviceSession, RecognizedDevice},
+    devices::{self, BatteryPoll, BatteryProtocol, DeviceSession, RecognizedDevice},
     discovery::{self, Transport},
     platform,
 };
@@ -116,16 +116,16 @@ fn probe_device_sessions(sessions: &mut [DeviceSession]) {
         };
 
         match session.query_battery() {
-            Ok(Some(reading)) => {
+            Ok(BatteryPoll::Reading(reading)) => {
                 eprintln!(
                     "BarePulse battery: {} command=0x{command:02X} level={}% charging={}",
                     device_name, reading.level, reading.charging,
                 );
             }
 
-            Ok(None) => {
+            Ok(BatteryPoll::Sleeping) => {
                 eprintln!(
-                    "BarePulse battery: {} command=0x{command:02X} returned no valid response",
+                    "BarePulse battery: {} command=0x{command:02X} sleeping",
                     device_name
                 );
             }

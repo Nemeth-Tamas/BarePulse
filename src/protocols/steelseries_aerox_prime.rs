@@ -12,7 +12,13 @@ const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const RETRY_DELAY: Duration = Duration::from_millis(50);
 
-pub(crate) fn query(device: &HidDevice, command: u8) -> io::Result<Option<BatteryReading>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryOutcome {
+    Reading(BatteryReading),
+    NoResponse,
+}
+
+pub(crate) fn query(device: &HidDevice, command: u8) -> io::Result<QueryOutcome> {
     drain_stale_reports(device)?;
 
     let output_length = usize::from(device.report_lengths().output);
@@ -27,6 +33,8 @@ pub(crate) fn query(device: &HidDevice, command: u8) -> io::Result<Option<Batter
     let mut request = vec![0u8; output_length];
     request[0] = 0x00;
     request[1] = command;
+
+    let mut received_any_report = false;
 
     for write_attempt in 0..WRITE_ATTEMPTS {
         match device.write_report(&request, WRITE_TIMEOUT) {
@@ -51,6 +59,8 @@ pub(crate) fn query(device: &HidDevice, command: u8) -> io::Result<Option<Batter
                 continue;
             };
 
+            received_any_report = true;
+
             #[cfg(debug_assertions)]
             eprintln!(
                 "BarePulse battery raw: command=0x{command:02X} bytes={:?}",
@@ -58,7 +68,7 @@ pub(crate) fn query(device: &HidDevice, command: u8) -> io::Result<Option<Batter
             );
 
             if let Some(reading) = decode_response(command, &report) {
-                return Ok(Some(reading));
+                return Ok(QueryOutcome::Reading(reading));
             }
         }
 
@@ -67,7 +77,16 @@ pub(crate) fn query(device: &HidDevice, command: u8) -> io::Result<Option<Batter
         }
     }
 
-    Ok(None)
+    if received_any_report {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "received HID reports but none matched SteelSeries battery command 0x{command:02X}"
+            ),
+        ))
+    } else {
+        Ok(QueryOutcome::NoResponse)
+    }
 }
 
 fn drain_stale_reports(device: &HidDevice) -> io::Result<()> {
