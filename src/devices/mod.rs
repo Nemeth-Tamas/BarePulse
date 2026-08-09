@@ -1,6 +1,9 @@
+mod session;
 mod steelseries;
 
 use crate::discovery::DiscoveredHardware;
+
+pub(crate) use session::DeviceSession;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BatteryProtocol {

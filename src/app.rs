@@ -5,11 +5,9 @@ use crate::{
         ConfigStore,
         model::{Config, DeviceTransport, DiscoveredDevice},
     },
-    devices::{self, BatteryProtocol, RecognizedDevice},
+    devices::{self, BatteryProtocol, DeviceSession, RecognizedDevice},
     discovery::{self, Transport},
     platform,
-    protocols::steelseries_aerox_prime,
-    transports::windows_hid,
 };
 
 pub(crate) fn run() -> io::Result<()> {
@@ -23,13 +21,19 @@ pub(crate) fn run() -> io::Result<()> {
         config_store.save(&config)?;
     }
 
+    let mut device_sessions = open_device_sessions(&recognized_devices);
+
     #[cfg(debug_assertions)]
     {
         log_discovery(&discovered_hardware, &recognized_devices);
-        probe_hid_transports(&recognized_devices);
+        probe_device_sessions(&mut device_sessions);
     }
 
-    platform::windows::run()
+    let result = platform::windows::run();
+
+    drop(device_sessions);
+
+    result
 }
 
 fn persist_recognized_devices(
@@ -80,49 +84,54 @@ fn to_config_device(recognized: &RecognizedDevice) -> DiscoveredDevice {
     }
 }
 
-#[cfg(debug_assertions)]
-fn probe_hid_transports(devices: &[RecognizedDevice]) {
-    for device in devices {
-        let hid_device = match windows_hid::HidDevice::open(&device.hardware.device_path) {
-            Ok(device) => device,
+fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
+    devices
+        .iter()
+        .filter_map(|device| match DeviceSession::open(device.clone()) {
+            Ok(session) => Some(session),
 
             Err(error) => {
+                #[cfg(debug_assertions)]
                 eprintln!("BarePulse HID open failed: {}: {error}", device.name);
-                continue;
-            }
-        };
 
-        let report_lengths = hid_device.report_lengths();
+                None
+            }
+        })
+        .collect()
+}
+
+#[cfg(debug_assertions)]
+fn probe_device_sessions(sessions: &mut [DeviceSession]) {
+    for session in sessions {
+        let report_lengths = session.report_lengths();
+        let device_name = session.device().name;
 
         eprintln!(
             "BarePulse HID open: {} input={} output={} feature={}",
-            device.name, report_lengths.input, report_lengths.output, report_lengths.feature,
+            device_name, report_lengths.input, report_lengths.output, report_lengths.feature,
         );
 
-        let result = match device.battery_protocol {
-            BatteryProtocol::SteelSeriesAeroxPrime { command } => {
-                steelseries_aerox_prime::query(&hid_device, command)
-                    .map(|reading| (command, reading))
-            }
+        let command = match session.device().battery_protocol {
+            BatteryProtocol::SteelSeriesAeroxPrime { command } => command,
         };
 
-        match result {
-            Ok((command, Some(reading))) => {
+        match session.query_battery() {
+            Ok(Some(reading)) => {
                 eprintln!(
                     "BarePulse battery: {} command=0x{command:02X} level={}% charging={}",
-                    device.name, reading.level, reading.charging,
+                    device_name, reading.level, reading.charging,
                 );
             }
 
-            Ok((command, None)) => {
+            Ok(None) => {
                 eprintln!(
                     "BarePulse battery: {} command=0x{command:02X} returned no valid response",
-                    device.name
+                    device_name
                 );
             }
 
             Err(error) => {
-                eprintln!("BarePulse battery query failed: {}: {error}", device.name);
+                eprintln!("BarePulse battery query failed: {}: {error}", device_name);
             }
         }
     }

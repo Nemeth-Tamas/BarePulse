@@ -198,4 +198,32 @@ mod tests {
 
         assert_eq!(decode_response(0x92, &report), None);
     }
+
+    #[test]
+    fn decodes_captured_wired_charging_packet() {
+        // Captured from a real Aerox 9 Wireless in wired charging mode.
+        let report = [0x00, 0x92, 0x95, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        assert_eq!(
+            decode_response(0x92, &report),
+            Some(BatteryReading {
+                level: 100,
+                charging: true,
+            })
+        );
+    }
+
+    #[test]
+    fn decodes_captured_wireless_packet() {
+        // Captured from a real Aerox 9 Wireless over its 2.4 GHz receiver.
+        let report = [0x00, 0xD2, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        assert_eq!(
+            decode_response(0xD2, &report),
+            Some(BatteryReading {
+                level: 100,
+                charging: false,
+            })
+        );
+    }
 }

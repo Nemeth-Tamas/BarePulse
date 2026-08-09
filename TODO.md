@@ -60,7 +60,7 @@
 - [X] Add wireless retries
 - [X] Add sensible HID timeouts
 - [ ] Add sleeping-device state
-- [ ] Cache working device handle
+- [X] Cache working device handle
 - [ ] Recover from disconnected/stale handle
 - [X] Add decoder unit tests
 - [X] Add synthetic/captured packet tests
