@@ -2,18 +2,31 @@ use std::{
     io,
     mem::{size_of, zeroed},
     ptr::{null, null_mut},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
-    UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-        PostQuitMessage, RegisterClassExW, TranslateMessage, WM_CLOSE, WM_DESTROY, WNDCLASSEXW,
+    UI::{
+        Shell::{
+            NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+        },
+        WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+            IDI_APPLICATION, LoadIconW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
+            TranslateMessage, WM_APP, WM_CLOSE, WM_DESTROY, WNDCLASSEXW,
+        },
     },
 };
 
-const WIDNOW_CLASS_NAME: &str = "BarePulseHiddenWindow";
+const WINDOW_CLASS_NAME: &str = "BarePulseHiddenWindow";
+const TASKBAR_CREATED_MESSAGE_NAME: &str = "TaskbarCreated";
+const TRAY_ICON_ID: u32 = 1;
+const TRAY_CALLBACK_MESSAGE: u32 = WM_APP + 1;
+const TRAY_TOOLTIP: &str = "BarePulse";
+
+static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
 
 fn main() {
     if let Err(error) = run() {
@@ -23,7 +36,18 @@ fn main() {
 }
 
 fn run() -> io::Result<()> {
-    let class_name = wide_null(WIDNOW_CLASS_NAME);
+    let class_name = wide_null(WINDOW_CLASS_NAME);
+    let taskbar_created_name = wide_null(TASKBAR_CREATED_MESSAGE_NAME);
+
+    // SAFETY:
+    // taskbar_created_name is a valid null-terminated UTF-16 string.
+    let taskbar_created_message = unsafe { RegisterWindowMessageW(taskbar_created_name.as_ptr()) };
+
+    if taskbar_created_message == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    TASKBAR_CREATED_MESSAGE.store(taskbar_created_message, Ordering::Relaxed);
 
     // SAFETY:
     // A null module name requests the module handle for this executable.
@@ -74,6 +98,8 @@ fn run() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
 
+    add_tray_icon(window)?;
+
     message_loop()
 }
 
@@ -111,6 +137,13 @@ unsafe extern "system" fn window_proc(
     w_param: WPARAM,
     l_param: LPARAM,
 ) -> LRESULT {
+    let taskbar_created_message = TASKBAR_CREATED_MESSAGE.load(Ordering::Relaxed);
+
+    if taskbar_created_message != 0 && message == taskbar_created_message {
+        let _ = add_tray_icon(window);
+        return 0;
+    }
+
     match message {
         WM_CLOSE => {
             // SAFETY:
@@ -123,6 +156,8 @@ unsafe extern "system" fn window_proc(
         }
 
         WM_DESTROY => {
+            delete_tray_icon(window);
+
             // SAFETY:
             // Posting WM_QUIT to the current thread is valid while processing
             // destruction of our resident window.
@@ -133,12 +168,75 @@ unsafe extern "system" fn window_proc(
             0
         }
 
+        TRAY_CALLBACK_MESSAGE => 0,
+
         _ => {
             // SAFETY:
             // Unhandled messages are forwarded with the exact parameters
             // supplied by Windows.
             unsafe { DefWindowProcW(window, message, w_param, l_param) }
         }
+    }
+}
+
+fn add_tray_icon(window: HWND) -> io::Result<()> {
+    // SAFETY:
+    // IDI_APPLICATION is a predefined shared system icon. Passing a null
+    // module handle requests the system resource.
+    let icon = unsafe { LoadIconW(null_mut(), IDI_APPLICATION) };
+
+    if icon.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY:
+    // NOTIFYICONDATAW permits zero initialization. We explicitely populate
+    // every field required by the flags used below.
+    let mut tray_data: NOTIFYICONDATAW = unsafe { zeroed() };
+
+    tray_data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+    tray_data.hWnd = window;
+    tray_data.uID = TRAY_ICON_ID;
+    tray_data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    tray_data.uCallbackMessage = TRAY_CALLBACK_MESSAGE;
+    tray_data.hIcon = icon;
+
+    copy_wide_to_buffer(TRAY_TOOLTIP, &mut tray_data.szTip);
+
+    // SAFETY:
+    // tray_data contains a valid owner window, icon ID, shared icon handle,
+    // callback message, and null-terminated tooltip buffer.
+    if unsafe { Shell_NotifyIconW(NIM_ADD, &tray_data) } == 0 {
+        return Err(io::Error::other("Shell_NotifyIconW(NIM_ADD) failed"));
+    }
+
+    Ok(())
+}
+
+fn delete_tray_icon(window: HWND) {
+    // SAFETY:
+    // NOTIFYICONDATAW permits zero initialization. NIM_DELETE only requires
+    // the fields used to identify the existing icon.
+    let mut tray_data: NOTIFYICONDATAW = unsafe { zeroed() };
+
+    tray_data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+    tray_data.hWnd = window;
+    tray_data.uID = TRAY_ICON_ID;
+
+    // SAFETY:
+    // The window and icon ID identify the notification-area icon owned by
+    // this process. Failure during shutdown required no further recovery.
+    unsafe {
+        Shell_NotifyIconW(NIM_DELETE, &tray_data);
+    }
+}
+
+fn copy_wide_to_buffer<const N: usize>(value: &str, buffer: &mut [u16; N]) {
+    for (destination, source) in buffer
+        .iter_mut()
+        .zip(value.encode_utf16().take(N.saturating_sub(1)))
+    {
+        *destination = source;
     }
 }
 
