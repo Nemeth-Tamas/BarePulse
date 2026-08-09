@@ -23,9 +23,9 @@ use windows_sys::{
             },
         },
         Foundation::{
-            CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_NO_MORE_ITEMS,
-            ERROR_OPERATION_ABORTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
-            INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+            CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING,
+            ERROR_NO_MORE_ITEMS, ERROR_OPERATION_ABORTED, GENERIC_READ, GENERIC_WRITE,
+            GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
         },
         Storage::FileSystem::{
             CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -568,7 +568,7 @@ fn complete_overlapped(
     // Reads the error from GetOverlappedResultEx.
     let error = unsafe { GetLastError() };
 
-    if error != WAIT_TIMEOUT {
+    if error != WAIT_TIMEOUT && error != ERROR_IO_INCOMPLETE {
         return Err(io::Error::from_raw_os_error(error as i32));
     }
 
