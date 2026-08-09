@@ -4,6 +4,7 @@ use std::{
     mem::{size_of, size_of_val, zeroed},
     ptr::{null, null_mut},
     slice,
+    time::Duration,
 };
 
 use windows_sys::{
@@ -22,10 +23,18 @@ use windows_sys::{
             },
         },
         Foundation::{
-            CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_ITEMS, GENERIC_READ,
-            GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+            CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_NO_MORE_ITEMS,
+            ERROR_OPERATION_ABORTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+            INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
         },
-        Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
+        Storage::FileSystem::{
+            CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+            ReadFile, WriteFile,
+        },
+        System::{
+            IO::{CancelIoEx, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED},
+            Threading::CreateEventW,
+        },
     },
     core::GUID,
 };
@@ -47,17 +56,22 @@ pub(crate) struct HidReportLengths {
 }
 
 pub(crate) struct HidDevice {
-    _handle: OwnedHandle,
+    handle: OwnedHandle,
     report_lengths: HidReportLengths,
 }
 
 impl HidDevice {
     pub(crate) fn open(device_path: &str) -> io::Result<Self> {
-        let handle = open_handle(device_path, GENERIC_READ | GENERIC_WRITE)?;
+        let handle = open_handle(
+            device_path,
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_FLAG_OVERLAPPED,
+        )?;
+
         let capabilities = read_capabilities(handle.0)?;
 
         Ok(Self {
-            _handle: handle,
+            handle,
             report_lengths: HidReportLengths {
                 input: capabilities.InputReportByteLength,
                 output: capabilities.OutputReportByteLength,
@@ -69,13 +83,68 @@ impl HidDevice {
     pub(crate) const fn report_lengths(&self) -> HidReportLengths {
         self.report_lengths
     }
+
+    pub(crate) fn write_report(&self, report: &[u8], timeout: Duration) -> io::Result<()> {
+        let expected_length = usize::from(self.report_lengths.output);
+
+        if report.len() != expected_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "HID output report length {}; expected {}",
+                    report.len(),
+                    expected_length
+                ),
+            ));
+        }
+
+        let transferred = write_overlapped(self.handle.0, report, timeout)?;
+
+        if transferred != report.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                format!(
+                    "partial HID report write: {} of {} bytes",
+                    transferred,
+                    report.len()
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn read_report(&self, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
+        let report_length = usize::from(self.report_lengths.input);
+
+        if report_length == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HID input report length is zero",
+            ));
+        }
+
+        let mut report = vec![0u8; report_length];
+
+        let Some(transferred) = read_overlapped(self.handle.0, &mut report, timeout)? else {
+            return Ok(None);
+        };
+
+        if transferred == 0 {
+            return Ok(None);
+        }
+
+        report.truncate(transferred);
+
+        Ok(Some(report))
+    }
 }
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         // SAFETY:
-        // This handle was returned successfully by CreateFileW and is owned
-        // exclusively by this wrapper.
+        // This Win32 handle is owned exclusively by this wrapper and must be
+        // released exactly once.
         unsafe {
             CloseHandle(self.0);
         }
@@ -348,10 +417,10 @@ fn read_hid_metadata(device_path: &str) -> io::Result<HidMetadata> {
 }
 
 fn open_metadata_handle(device_path: &str) -> io::Result<OwnedHandle> {
-    open_handle(device_path, 0)
+    open_handle(device_path, 0, 0)
 }
 
-fn open_handle(device_path: &str, desired_access: u32) -> io::Result<OwnedHandle> {
+fn open_handle(device_path: &str, desired_access: u32, flags: u32) -> io::Result<OwnedHandle> {
     let path = wide_null(device_path);
 
     // SAFETY:
@@ -365,7 +434,7 @@ fn open_handle(device_path: &str, desired_access: u32) -> io::Result<OwnedHandle
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             null(),
             OPEN_EXISTING,
-            0,
+            flags,
             null_mut(),
         )
     };
@@ -375,6 +444,169 @@ fn open_handle(device_path: &str, desired_access: u32) -> io::Result<OwnedHandle
     }
 
     Ok(OwnedHandle(handle))
+}
+
+fn write_overlapped(handle: HANDLE, buffer: &[u8], timeout: Duration) -> io::Result<usize> {
+    let (event, mut overlapped) = create_overlapped()?;
+
+    // SAFETY:
+    // handle was opened for overlapped write access. buffer remains alive
+    // until the operation is synchronously completed or canceled below.
+    let started = unsafe {
+        WriteFile(
+            handle,
+            buffer.as_ptr(),
+            buffer.len() as u32,
+            null_mut(),
+            &mut overlapped,
+        )
+    };
+
+    if started == 0 {
+        // SAFETY:
+        // Reads the error from the immediately preceding WriteFile call.
+        let error = unsafe { GetLastError() };
+
+        if error != ERROR_IO_PENDING {
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+    }
+
+    let result = complete_overlapped(handle, &mut overlapped, timeout)?;
+
+    drop(event);
+
+    match result {
+        Some(transferred) => Ok(transferred as usize),
+        None => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "HID report write timed out",
+        )),
+    }
+}
+
+fn read_overlapped(
+    handle: HANDLE,
+    buffer: &mut [u8],
+    timeout: Duration,
+) -> io::Result<Option<usize>> {
+    let (event, mut overlapped) = create_overlapped()?;
+
+    // SAFETY:
+    // handle was opened for overlapped read access. buffer remains alive
+    // until the operation is synchronously completed or canceled below.
+    let started = unsafe {
+        ReadFile(
+            handle,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            null_mut(),
+            &mut overlapped,
+        )
+    };
+
+    if started == 0 {
+        // SAFETY:
+        // Reads the error from the immediately preceding ReadFile call.
+        let error = unsafe { GetLastError() };
+
+        if error != ERROR_IO_PENDING {
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+    }
+
+    let result = complete_overlapped(handle, &mut overlapped, timeout)?;
+
+    drop(event);
+
+    Ok(result.map(|transferred| transferred as usize))
+}
+
+fn create_overlapped() -> io::Result<(OwnedHandle, OVERLAPPED)> {
+    // SAFETY:
+    // No security descriptor or name is needed. A manual-reset event is used
+    // for one overlapped operation.
+    let event = unsafe { CreateEventW(null(), 1, 0, null()) };
+
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY:
+    // OVERLAPPED permits zero initialization before its event is assigned.
+    let mut overlapped: OVERLAPPED = unsafe { zeroed() };
+    overlapped.hEvent = event;
+
+    Ok((OwnedHandle(event), overlapped))
+}
+
+fn complete_overlapped(
+    handle: HANDLE,
+    overlapped: &mut OVERLAPPED,
+    timeout: Duration,
+) -> io::Result<Option<u32>> {
+    let mut transferred = 0;
+
+    // SAFETY:
+    // overlapped belongs to the pending operation on handle and remains alive
+    // for the entire wait/cancellation sequence.
+    let completed = unsafe {
+        GetOverlappedResultEx(
+            handle,
+            overlapped,
+            &mut transferred,
+            timeout_milliseconds(timeout),
+            0,
+        )
+    };
+
+    if completed != 0 {
+        return Ok(Some(transferred));
+    }
+
+    // SAFETY:
+    // Reads the error from GetOverlappedResultEx.
+    let error = unsafe { GetLastError() };
+
+    if error != WAIT_TIMEOUT {
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+
+    // SAFETY:
+    // Requests cancellation of this exact pending operation. A completion
+    // wait follows before overlapped is allowed to go out of scope.
+    unsafe {
+        CancelIoEx(handle, overlapped);
+    }
+
+    transferred = 0;
+
+    // SAFETY:
+    // Waiting here guarantees the canceled/racing operation has finished
+    // before its OVERLAPPED structure and buffer are released.
+    let completed = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
+
+    if completed != 0 {
+        return Ok(Some(transferred));
+    }
+
+    // SAFETY:
+    // Reads the completion result from GetOverlappedResult.
+    let error = unsafe { GetLastError() };
+
+    if error == ERROR_OPERATION_ABORTED {
+        return Ok(None);
+    }
+
+    Err(io::Error::from_raw_os_error(error as i32))
+}
+
+fn timeout_milliseconds(timeout: Duration) -> u32 {
+    if timeout.is_zero() {
+        return 0;
+    }
+
+    timeout.as_millis().clamp(1, u128::from(u32::MAX)) as u32
 }
 
 fn read_collection_usage(handle: HANDLE) -> Option<(Option<u16>, Option<u16>)> {

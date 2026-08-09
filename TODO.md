@@ -44,26 +44,26 @@
 
 ## Milestone 3 — Aerox 9 local support
 
-- [ ] Add local Aerox 9 device profile
+- [X] Add local Aerox 9 device profile
 - [X] Add raw Windows HID transport
 - [X] Open correct SteelSeries HID interface
-- [ ] Implement battery request transport
-- [ ] Implement SteelSeries Aerox/Prime decoder
-- [ ] Support wireless PID `0x1858`
-- [ ] Support wireless command `0xD2`
-- [ ] Support wired PID `0x185A`
-- [ ] Support wired command `0x92`
-- [ ] Decode charging state
-- [ ] Validate response command echo
-- [ ] Reject malformed responses
-- [ ] Ignore unrelated HID packets
-- [ ] Add wireless retries
-- [ ] Add sensible HID timeouts
+- [X] Implement battery request transport
+- [X] Implement SteelSeries Aerox/Prime decoder
+- [X] Support wireless PID `0x1858`
+- [X] Support wireless command `0xD2`
+- [X] Support wired PID `0x185A`
+- [X] Support wired command `0x92`
+- [X] Decode charging state
+- [X] Validate response command echo
+- [X] Reject malformed responses
+- [X] Ignore unrelated HID packets
+- [X] Add wireless retries
+- [X] Add sensible HID timeouts
 - [ ] Add sleeping-device state
 - [ ] Cache working device handle
 - [ ] Recover from disconnected/stale handle
-- [ ] Add decoder unit tests
-- [ ] Add synthetic/captured packet tests
+- [X] Add decoder unit tests
+- [X] Add synthetic/captured packet tests
 - [ ] Confirm operation without SteelSeries GG/Engine
 
 ## Milestone 4 — Real tray device status

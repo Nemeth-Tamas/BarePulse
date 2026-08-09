@@ -5,9 +5,10 @@ use crate::{
         ConfigStore,
         model::{Config, DeviceTransport, DiscoveredDevice},
     },
-    devices::{self, RecognizedDevice},
+    devices::{self, BatteryProtocol, RecognizedDevice},
     discovery::{self, Transport},
     platform,
+    protocols::steelseries_aerox_prime,
     transports::windows_hid,
 };
 
@@ -82,21 +83,46 @@ fn to_config_device(recognized: &RecognizedDevice) -> DiscoveredDevice {
 #[cfg(debug_assertions)]
 fn probe_hid_transports(devices: &[RecognizedDevice]) {
     for device in devices {
-        match windows_hid::HidDevice::open(&device.hardware.device_path) {
-            Ok(hid_device) => {
-                let report_lengths = hid_device.report_lengths();
+        let hid_device = match windows_hid::HidDevice::open(&device.hardware.device_path) {
+            Ok(device) => device,
 
+            Err(error) => {
+                eprintln!("BarePulse HID open failed: {}: {error}", device.name);
+                continue;
+            }
+        };
+
+        let report_lengths = hid_device.report_lengths();
+
+        eprintln!(
+            "BarePulse HID open: {} input={} output={} feature={}",
+            device.name, report_lengths.input, report_lengths.output, report_lengths.feature,
+        );
+
+        let result = match device.battery_protocol {
+            BatteryProtocol::SteelSeriesAeroxPrime { command } => {
+                steelseries_aerox_prime::query(&hid_device, command)
+                    .map(|reading| (command, reading))
+            }
+        };
+
+        match result {
+            Ok((command, Some(reading))) => {
                 eprintln!(
-                    "BarePulse HID open: {} input={} output={} feature={}",
-                    device.name,
-                    report_lengths.input,
-                    report_lengths.output,
-                    report_lengths.feature,
+                    "BarePulse battery: {} command=0x{command:02X} level={}% charging={}",
+                    device.name, reading.level, reading.charging,
+                );
+            }
+
+            Ok((command, None)) => {
+                eprintln!(
+                    "BarePulse battery: {} command=0x{command:02X} returned no valid response",
+                    device.name
                 );
             }
 
             Err(error) => {
-                eprintln!("BarePulse HID open failed: {}: {error}", device.name);
+                eprintln!("BarePulse battery query failed: {}: {error}", device.name);
             }
         }
     }
@@ -175,6 +201,7 @@ mod tests {
                 product_string: Some("SteelSeries Aerox 9 Wireless".to_string()),
                 serial_number: None,
             },
+            battery_protocol: BatteryProtocol::SteelSeriesAeroxPrime { command: 0x92 },
         }
     }
 

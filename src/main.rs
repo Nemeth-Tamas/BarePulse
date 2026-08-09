@@ -3,6 +3,7 @@ mod config;
 mod devices;
 mod discovery;
 mod platform;
+mod protocols;
 mod transports;
 
 fn main() {

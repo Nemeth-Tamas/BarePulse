@@ -1,5 +1,5 @@
 use crate::{
-    devices::RecognizedDevice,
+    devices::{BatteryProtocol, RecognizedDevice},
     discovery::{DiscoveredHardware, Transport},
 };
 
@@ -10,6 +10,9 @@ const STEELSERIES_VENDOR_ID: u16 = 0x1038;
 
 const WIRELESS_PRODUCT_ID: u16 = 0x1858;
 const WIRED_PRODUCT_ID: u16 = 0x185A;
+
+const WIRELESS_BATTERY_COMMAND: u8 = 0xD2;
+const WIRED_BATTERY_COMMAND: u8 = 0x92;
 
 const MANAGEMENT_INTERFACE: u32 = 3;
 const MANAGEMENT_USAGE_PAGE: u16 = 0xFFC0;
@@ -24,12 +27,11 @@ pub(super) fn recognize(hardware: &DiscoveredHardware) -> Option<RecognizedDevic
         return None;
     }
 
-    if !matches!(
-        hardware.product_id,
-        Some(WIRELESS_PRODUCT_ID | WIRED_PRODUCT_ID)
-    ) {
-        return None;
-    }
+    let battery_command = match hardware.product_id {
+        Some(WIRELESS_PRODUCT_ID) => WIRELESS_BATTERY_COMMAND,
+        Some(WIRED_PRODUCT_ID) => WIRED_BATTERY_COMMAND,
+        _ => return None,
+    };
 
     if hardware.interface_number != Some(MANAGEMENT_INTERFACE) {
         return None;
@@ -44,6 +46,9 @@ pub(super) fn recognize(hardware: &DiscoveredHardware) -> Option<RecognizedDevic
     Some(RecognizedDevice {
         profile: PROFILE_ID,
         name: DEVICE_NAME,
+        battery_protocol: BatteryProtocol::SteelSeriesAeroxPrime {
+            command: battery_command,
+        },
         hardware: hardware.clone(),
     })
 }
@@ -74,6 +79,12 @@ mod tests {
 
         assert_eq!(device.profile, PROFILE_ID);
         assert_eq!(device.name, DEVICE_NAME);
+        assert_eq!(
+            device.battery_protocol,
+            BatteryProtocol::SteelSeriesAeroxPrime {
+                command: WIRED_BATTERY_COMMAND,
+            }
+        );
     }
 
     #[test]
@@ -83,6 +94,12 @@ mod tests {
 
         assert_eq!(device.profile, PROFILE_ID);
         assert_eq!(device.name, DEVICE_NAME);
+        assert_eq!(
+            device.battery_protocol,
+            BatteryProtocol::SteelSeriesAeroxPrime {
+                command: WIRELESS_BATTERY_COMMAND,
+            }
+        );
     }
 
     #[test]
