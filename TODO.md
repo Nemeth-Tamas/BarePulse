@@ -11,8 +11,8 @@
 - [x] Add clean tray-icon deletion path
 - [x] Recover tray icon after Explorer/taskbar restart
 - [x] Split platform code out of `main.rs`
-- [ ] Add native tray context menu
-- [ ] Add clean Exit command
+- [X] Add native tray context menu
+- [X] Add clean Exit command
 
 ## Milestone 1 — Portable configuration
 

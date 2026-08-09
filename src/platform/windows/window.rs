@@ -155,7 +155,18 @@ unsafe extern "system" fn window_proc(
             0
         }
 
-        tray::CALLBACK_MESSAGE => 0,
+        tray::CALLBACK_MESSAGE => {
+            if let Ok(tray::Action::Exit) = tray::handle_callback(window, l_param) {
+                // SAFETY:
+                // window is our valid hidden owner window. Destroying it triggers
+                // WM_DESTROY, which removes the tray icon and terminates the loop.
+                unsafe {
+                    DestroyWindow(window);
+                }
+            }
+
+            0
+        }
 
         _ => {
             // SAFETY:
