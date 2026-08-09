@@ -16,6 +16,7 @@ const RETRY_DELAY: Duration = Duration::from_millis(50);
 pub(crate) enum QueryOutcome {
     Reading(BatteryReading),
     NoResponse,
+    UnrelatedReports,
 }
 
 pub(crate) fn query(device: &HidDevice, command: u8) -> io::Result<QueryOutcome> {
@@ -78,12 +79,7 @@ pub(crate) fn query(device: &HidDevice, command: u8) -> io::Result<QueryOutcome>
     }
 
     if received_any_report {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "received HID reports but none matched SteelSeries battery command 0x{command:02X}"
-            ),
-        ))
+        Ok(QueryOutcome::UnrelatedReports)
     } else {
         Ok(QueryOutcome::NoResponse)
     }
@@ -244,5 +240,13 @@ mod tests {
                 charging: false,
             })
         );
+    }
+
+    #[test]
+    fn ignores_captured_sleeping_receiver_packet() {
+        // Captured from the Aerox 9 receiver while the wireless mouse was asleep.
+        let report = [0x00, 0x40, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        assert_eq!(decode_response(0xD2, &report), None);
     }
 }

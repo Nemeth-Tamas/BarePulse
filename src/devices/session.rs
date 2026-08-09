@@ -106,17 +106,29 @@ fn query_once(hid_device: &HidDevice, protocol: BatteryProtocol) -> io::Result<Q
 }
 
 fn classify_outcome(protocol: BatteryProtocol, outcome: QueryOutcome) -> io::Result<BatteryPoll> {
-    match outcome {
-        QueryOutcome::Reading(reading) => Ok(BatteryPoll::Reading(reading)),
+    match (protocol, outcome) {
+        (_, QueryOutcome::Reading(reading)) => Ok(BatteryPoll::Reading(reading)),
 
-        QueryOutcome::NoResponse => match protocol {
-            BatteryProtocol::SteelSeriesAeroxPrime { command: 0xD2 } => Ok(BatteryPoll::Sleeping),
+        (
+            BatteryProtocol::SteelSeriesAeroxPrime { command: 0xD2 },
+            QueryOutcome::NoResponse | QueryOutcome::UnrelatedReports,
+        ) => Ok(BatteryPoll::Sleeping),
 
-            BatteryProtocol::SteelSeriesAeroxPrime { command } => Err(io::Error::new(
+        (BatteryProtocol::SteelSeriesAeroxPrime { command }, QueryOutcome::NoResponse) => {
+            Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!("wired SteelSeries battery command 0x{command:02X} returned no response"),
-            )),
-        },
+            ))
+        }
+
+        (BatteryProtocol::SteelSeriesAeroxPrime { command }, QueryOutcome::UnrelatedReports) => {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "wired SteelSeries battery command 0x{command:02X} received only unrelated HID reports"
+                ),
+            ))
+        }
     }
 }
 
@@ -202,6 +214,18 @@ mod tests {
     }
 
     #[test]
+    fn wireless_unrelated_reports_are_sleeping() {
+        assert_eq!(
+            classify_outcome(
+                BatteryProtocol::SteelSeriesAeroxPrime { command: 0xD2 },
+                QueryOutcome::UnrelatedReports,
+            )
+            .expect("wireless unrelated reports should be a sleeping state"),
+            BatteryPoll::Sleeping
+        );
+    }
+
+    #[test]
     fn wired_no_response_is_timeout() {
         let error = classify_outcome(
             BatteryProtocol::SteelSeriesAeroxPrime { command: 0x92 },
@@ -213,11 +237,22 @@ mod tests {
     }
 
     #[test]
+    fn wired_unrelated_reports_are_protocol_error() {
+        let error = classify_outcome(
+            BatteryProtocol::SteelSeriesAeroxPrime { command: 0x92 },
+            QueryOutcome::UnrelatedReports,
+        )
+        .expect_err("wired unrelated reports should not be treated as sleeping");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn replacement_may_have_new_device_path() {
         let current = test_device("old-instance", 0x1858, None);
         let replacement = test_device("new-instance", 0x1858, None);
 
-        let found = find_replacement(&current, &[replacement.clone()])
+        let found = find_replacement(&current, std::slice::from_ref(&replacement))
             .expect("replacement search should succeed")
             .expect("replacement should be found");
 

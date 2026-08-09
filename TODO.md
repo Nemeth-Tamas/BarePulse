@@ -59,7 +59,7 @@
 - [X] Ignore unrelated HID packets
 - [X] Add wireless retries
 - [X] Add sensible HID timeouts
-- [ ] Add sleeping-device state
+- [X] Add sleeping-device state
 - [X] Cache working device handle
 - [ ] Recover from disconnected/stale handle
 - [X] Add decoder unit tests
