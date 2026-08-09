@@ -1,5 +1,8 @@
 use std::io;
 
+#[cfg(debug_assertions)]
+use std::{env, thread, time::Duration};
+
 use crate::{
     config::{
         ConfigStore,
@@ -27,6 +30,10 @@ pub(crate) fn run() -> io::Result<()> {
     {
         log_discovery(&discovered_hardware, &recognized_devices);
         probe_device_sessions(&mut device_sessions);
+
+        if reconnect_test_requested() {
+            run_reconnect_test(&mut device_sessions);
+        }
     }
 
     let result = platform::windows::run();
@@ -101,6 +108,17 @@ fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
 }
 
 #[cfg(debug_assertions)]
+const RECONNECT_TEST_POLLS: usize = 30;
+
+#[cfg(debug_assertions)]
+const RECONNECT_TEST_INTERVAL: Duration = Duration::from_secs(1);
+
+#[cfg(debug_assertions)]
+fn reconnect_test_requested() -> bool {
+    env::var_os("BAREPULSE_RECONNECT_TEST").is_some()
+}
+
+#[cfg(debug_assertions)]
 fn probe_device_sessions(sessions: &mut [DeviceSession]) {
     for session in sessions {
         let report_lengths = session.report_lengths();
@@ -135,6 +153,61 @@ fn probe_device_sessions(sessions: &mut [DeviceSession]) {
             }
         }
     }
+}
+
+#[cfg(debug_assertions)]
+fn run_reconnect_test(sessions: &mut [DeviceSession]) {
+    if sessions.is_empty() {
+        eprintln!("BarePulse reconnect test: no open device sessions");
+        return;
+    }
+
+    eprintln!(
+        "BarePulse reconnect test: starting {RECONNECT_TEST_POLLS} polls; \
+         unplug the receiver, wait for at least one failed poll, then reconnect it"
+    );
+
+    for poll in 1..=RECONNECT_TEST_POLLS {
+        for session in sessions.iter_mut() {
+            let device_name = session.device().name;
+
+            let command = match session.device().battery_protocol {
+                BatteryProtocol::SteelSeriesAeroxPrime { command } => command,
+            };
+
+            match session.query_battery() {
+                Ok(BatteryPoll::Reading(reading)) => {
+                    eprintln!(
+                        "BarePulse reconnect test: poll {poll}/{RECONNECT_TEST_POLLS} \
+                         {} command=0x{command:02X} level={}% charging={}",
+                        device_name, reading.level, reading.charging,
+                    );
+                }
+
+                Ok(BatteryPoll::Sleeping) => {
+                    eprintln!(
+                        "BarePulse reconnect test: poll {poll}/{RECONNECT_TEST_POLLS} \
+                         {} command=0x{command:02X} sleeping",
+                        device_name
+                    );
+                }
+
+                Err(error) => {
+                    eprintln!(
+                        "BarePulse reconnect test: poll {poll}/{RECONNECT_TEST_POLLS} \
+                         {} error={error}",
+                        device_name
+                    );
+                }
+            }
+        }
+
+        if poll < RECONNECT_TEST_POLLS {
+            thread::sleep(RECONNECT_TEST_INTERVAL);
+        }
+    }
+
+    eprintln!("BarePulse reconnect test: finished");
 }
 
 #[cfg(debug_assertions)]

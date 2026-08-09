@@ -93,6 +93,12 @@ impl DeviceSession {
         self.device = replacement;
         self.hid_device = replacement_handle;
 
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "BarePulse session: {} rediscovery recovery succeeded: key={}",
+            self.device.name, self.device.hardware.hardware_key
+        );
+
         Ok(())
     }
 }
