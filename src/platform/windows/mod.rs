@@ -1,6 +1,8 @@
+mod file;
 mod tray;
 mod window;
 
+pub(crate) use file::replace_atomically as replace_file_atomically;
 pub(crate) use window::run;
 
 fn wide_null(value: &str) -> Vec<u16> {

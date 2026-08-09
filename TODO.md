@@ -16,14 +16,14 @@
 
 ## Milestone 1 — Portable configuration
 
-- [ ] Determine executable directory
-- [ ] Create `barepulse.toml` beside executable
-- [ ] Load existing configuration
-- [ ] Add configuration schema/version
-- [ ] Add atomic configuration writes
-- [ ] Add basic application settings
+- [X] Determine executable directory
+- [X] Create `barepulse.toml` beside executable
+- [X] Load existing configuration
+- [X] Add configuration schema/version
+- [X] Add atomic configuration writes
+- [X] Add basic application settings
 - [ ] Add discovered-device persistence
-- [ ] Preserve portable-first layout
+- [X] Preserve portable-first layout
 
 ## Milestone 2 — Windows HID discovery
 
