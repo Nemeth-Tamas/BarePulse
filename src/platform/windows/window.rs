@@ -12,13 +12,13 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, KillTimer,
         PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetTimer, TranslateMessage,
-        WM_CLOSE, WM_DESTROY, WM_TIMER, WNDCLASSEXW,
+        WM_CLOSE, WM_DESTROY, WM_DEVICECHANGE, WM_TIMER, WNDCLASSEXW,
     },
 };
 
 use crate::devices::{BatteryState, ConnectionState, DeviceStatus};
 
-use super::{tray, wide_null};
+use super::{device_events, tray, wide_null};
 
 const WINDOW_CLASS_NAME: &str = "BarePulseHiddenWindow";
 const TASKBAR_CREATED_MESSAGE_NAME: &str = "TaskbarCreated";
@@ -26,6 +26,9 @@ const TASKBAR_CREATED_MESSAGE_NAME: &str = "TaskbarCreated";
 static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
 
 const STATUS_TIMER_ID: usize = 1;
+const DEVICE_CHANGE_TIMER_ID: usize = 2;
+
+const DEVICE_CHANGE_DEBOUNCE_MILLISECONDS: u32 = 150;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct LowBatteryNotificationState {
@@ -180,6 +183,8 @@ fn run_window(poll_interval_seconds: u64) -> io::Result<()> {
     if window.is_null() {
         return Err(io::Error::last_os_error());
     }
+
+    let _device_notifications = device_events::Registration::register(window)?;
 
     let statuses = status_snapshot();
 
@@ -339,6 +344,7 @@ unsafe extern "system" fn window_proc(
             // once the window is being destroyed.
             unsafe {
                 KillTimer(window, STATUS_TIMER_ID);
+                KillTimer(window, DEVICE_CHANGE_TIMER_ID);
             }
 
             tray::delete(window);
@@ -348,6 +354,55 @@ unsafe extern "system" fn window_proc(
             // destruction of our resident window.
             unsafe {
                 PostQuitMessage(0);
+            }
+
+            0
+        }
+
+        WM_DEVICECHANGE => {
+            if let Some(change) = device_events::classify(w_param) {
+                #[cfg(debug_assertions)]
+                eprintln!("BarePulse device event: HID {}", change.label());
+
+                // SAFETY:
+                // Reusing the same timer ID restarts the short debounce window,
+                // coalescing bursts of HID-interface notifications into one refresh.
+                let timer = unsafe {
+                    SetTimer(
+                        window,
+                        DEVICE_CHANGE_TIMER_ID,
+                        DEVICE_CHANGE_DEBOUNCE_MILLISECONDS,
+                        None,
+                    )
+                };
+
+                if timer == 0 {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "BarePulse device event: failed to arm refresh timer: {}",
+                        io::Error::last_os_error()
+                    );
+                }
+            }
+
+            // WM_DEVICECHANGE expects TRUE for handled broadcast notifications.
+            1
+        }
+
+        WM_TIMER if w_param == DEVICE_CHANGE_TIMER_ID => {
+            // SAFETY:
+            // This is a one-shot logical debounce. Kill it before performing the
+            // potentially slower status refresh.
+            unsafe {
+                KillTimer(window, DEVICE_CHANGE_TIMER_ID);
+            }
+
+            #[cfg(debug_assertions)]
+            eprintln!("BarePulse device event: refreshing device status");
+
+            if let Err(error) = refresh_status(window) {
+                #[cfg(debug_assertions)]
+                eprintln!("BarePulse device-event refresh failed: {error}");
             }
 
             0

@@ -1,3 +1,4 @@
+mod device_events;
 mod file;
 mod tray;
 mod window;
