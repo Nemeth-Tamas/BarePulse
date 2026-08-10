@@ -38,6 +38,10 @@ pub(crate) struct DeviceRegistry {
 #[serde(deny_unknown_fields)]
 struct Manifest {
     schema: u32,
+
+    #[serde(default)]
+    revision: u64,
+
     profiles: Vec<ManifestProfile>,
 }
 
@@ -274,9 +278,11 @@ impl DeviceRegistry {
             )
         })?;
 
-        parse_manifest(&contents).map_err(|error| {
+        let fetched_manifest = parse_manifest(&contents).map_err(|error| {
             io::Error::new(error.kind(), format!("GitHub manifest is invalid: {error}"))
         })?;
+
+        ensure_manifest_not_older(&self.manifest, &fetched_manifest)?;
 
         let temporary_path = temporary_manifest_path(&self.directory);
 
@@ -649,6 +655,20 @@ fn temporary_profile_path(
     Ok(parent.join(temporary_name))
 }
 
+fn ensure_manifest_not_older(current: &Manifest, candidate: &Manifest) -> io::Result<()> {
+    if candidate.revision < current.revision {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "GitHub manifest revision {} is older than cached revision {}",
+                candidate.revision, current.revision,
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 fn parse_manifest(contents: &str) -> io::Result<Manifest> {
     let manifest: Manifest = toml::from_str(contents)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -934,6 +954,7 @@ mod tests {
 
     const VALID_MANIFEST: &str = r#"
 schema = 1
+revision = 1
 
 [[profiles]]
 id = "steelseries.aerox9"
@@ -1187,5 +1208,38 @@ battery_command = 0x92
         let future = now + Duration::from_secs(60);
 
         assert!(refresh_interval_elapsed(future, now));
+    }
+
+    #[test]
+    fn legacy_manifest_defaults_revision_to_zero() {
+        let legacy = VALID_MANIFEST.replace("revision = 1\n", "");
+
+        let manifest = parse_manifest(&legacy).expect("legacy manifest should remain valid");
+
+        assert_eq!(manifest.revision, 0);
+    }
+
+    #[test]
+    fn stale_manifest_revision_is_rejected() {
+        let current = parse_manifest(VALID_MANIFEST).expect("current manifest");
+
+        let stale_contents = VALID_MANIFEST.replace("revision = 1", "revision = 0");
+
+        let stale = parse_manifest(&stale_contents).expect("stale manifest is structurally valid");
+
+        let error = ensure_manifest_not_older(&current, &stale)
+            .expect_err("older manifest must be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn equal_manifest_revision_is_accepted() {
+        let current = parse_manifest(VALID_MANIFEST).expect("current manifest");
+
+        let candidate = parse_manifest(VALID_MANIFEST).expect("candidate manifest");
+
+        ensure_manifest_not_older(&current, &candidate)
+            .expect("equal manifest revision should be accepted");
     }
 }

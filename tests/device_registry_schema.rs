@@ -28,6 +28,10 @@ const WIRED_BATTERY_COMMAND: u8 = 0x92;
 #[serde(deny_unknown_fields)]
 struct Manifest {
     schema: u32,
+
+    #[serde(default)]
+    revision: u64,
+
     profiles: Vec<ManifestProfile>,
 }
 
@@ -111,6 +115,7 @@ fn manifest_is_valid_and_contains_aerox_9() {
     let manifest: Manifest = read_toml(&directory.join("manifest.toml"));
 
     assert_eq!(manifest.schema, REGISTRY_SCHEMA);
+    assert_eq!(manifest.revision, 1);
     assert!(!manifest.profiles.is_empty());
 
     let mut profile_ids = HashSet::new();

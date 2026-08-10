@@ -1,5 +1,8 @@
 schema = 1
 
+# Increment whenever registry contents change.
+revision = 1
+
 [[profiles]]
 id = "steelseries.aerox9"
 path = "steelseries.aerox9.toml"
