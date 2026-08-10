@@ -188,10 +188,10 @@ fn run_window(poll_interval_seconds: u64) -> io::Result<()> {
     process_current_low_battery(window)?;
 
     #[cfg(debug_assertions)]
-    if std::env::var_os("BAREPULSE_NOTIFICATION_TEST").is_some() {
-        if let Some(status) = statuses.first() {
-            tray::show_low_battery_notification(window, status, 20)?;
-        }
+    if std::env::var_os("BAREPULSE_NOTIFICATION_TEST").is_some()
+        && let Some(status) = statuses.first()
+    {
+        tray::show_low_battery_notification(window, status, 20)?;
     }
 
     let poll_interval = poll_interval_milliseconds(poll_interval_seconds);
