@@ -1,7 +1,8 @@
 mod registry;
 mod session;
 mod status;
-mod steelseries;
+
+use std::io;
 
 use crate::discovery::DiscoveredHardware;
 
@@ -16,8 +17,8 @@ pub(crate) enum BatteryProtocol {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecognizedDevice {
-    pub(crate) profile: &'static str,
-    pub(crate) name: &'static str,
+    pub(crate) profile: String,
+    pub(crate) name: String,
     pub(crate) connection_mode: ConnectionMode,
     pub(crate) battery_protocol: BatteryProtocol,
     pub(crate) hardware: DiscoveredHardware,
@@ -26,14 +27,6 @@ pub(crate) struct RecognizedDevice {
 pub(crate) fn recognize(
     hardware: &[DiscoveredHardware],
     registry: &DeviceRegistry,
-) -> Vec<RecognizedDevice> {
-    hardware
-        .iter()
-        .filter(|hardware| registry.supports(hardware))
-        .filter_map(steelseries::recognize)
-        .collect()
-}
-
-pub(crate) fn recognize_known(hardware: &[DiscoveredHardware]) -> Vec<RecognizedDevice> {
-    hardware.iter().filter_map(steelseries::recognize).collect()
+) -> io::Result<Vec<RecognizedDevice>> {
+    registry.recognize(hardware)
 }

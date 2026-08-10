@@ -9,9 +9,7 @@ use crate::{
     transports::windows_hid::{HidDevice, HidReportLengths},
 };
 
-use super::{
-    BatteryProtocol, BatteryState, ConnectionState, DeviceStatus, RecognizedDevice, recognize_known,
-};
+use super::{BatteryProtocol, BatteryState, ConnectionState, DeviceStatus, RecognizedDevice};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BatteryPoll {
@@ -79,7 +77,7 @@ impl DeviceSession {
         };
 
         DeviceStatus {
-            name: self.device.name.to_string(),
+            name: self.device.name.clone(),
             mode: self.device.connection_mode,
             connection,
             battery: self.last_battery,
@@ -116,10 +114,8 @@ impl DeviceSession {
             )
         })?;
 
-        let recognized_devices = recognize_known(&discovered_hardware);
-
-        let replacement =
-            find_replacement(&self.device, &recognized_devices)?.ok_or_else(|| {
+        let replacement = find_replacement_hardware(&self.device, &discovered_hardware)?
+            .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotConnected,
                     format!(
@@ -130,16 +126,18 @@ impl DeviceSession {
             })?;
 
         let replacement_handle =
-            HidDevice::open(&replacement.hardware.device_path).map_err(|reopen_error| {
-                io::Error::new(
-                    reopen_error.kind(),
-                    format!(
-                        "HID query failed ({first_error}); rediscovered device could not be opened ({reopen_error})"
-                    ),
-                )
-            })?;
+    HidDevice::open(&replacement.device_path).map_err(
+        |reopen_error| {
+            io::Error::new(
+                reopen_error.kind(),
+                format!(
+                    "HID query failed ({first_error}); rediscovered device could not be opened ({reopen_error})"
+                ),
+            )
+        },
+    )?;
 
-        self.device = replacement;
+        self.device.hardware = replacement;
         self.hid_device = replacement_handle;
 
         #[cfg(debug_assertions)]
@@ -187,16 +185,20 @@ fn classify_outcome(protocol: BatteryProtocol, outcome: QueryOutcome) -> io::Res
     }
 }
 
-fn find_replacement(
+fn find_replacement_hardware(
     current: &RecognizedDevice,
-    candidates: &[RecognizedDevice],
-) -> io::Result<Option<RecognizedDevice>> {
+    candidates: &[discovery::DiscoveredHardware],
+) -> io::Result<Option<discovery::DiscoveredHardware>> {
     let mut matching = candidates.iter().filter(|candidate| {
-        candidate.profile == current.profile
-            && candidate.hardware.product_id == current.hardware.product_id
+        candidate.transport == current.hardware.transport
+            && candidate.vendor_id == current.hardware.vendor_id
+            && candidate.product_id == current.hardware.product_id
+            && candidate.interface_number == current.hardware.interface_number
+            && candidate.usage_page == current.hardware.usage_page
+            && candidate.usage == current.hardware.usage
             && serials_match(
                 current.hardware.serial_number.as_deref(),
-                candidate.hardware.serial_number.as_deref(),
+                candidate.serial_number.as_deref(),
             )
     });
 
@@ -236,8 +238,8 @@ mod tests {
         serial_number: Option<&str>,
     ) -> RecognizedDevice {
         RecognizedDevice {
-            profile: "steelseries.aerox9",
-            name: "SteelSeries Aerox 9 Wireless",
+            profile: "steelseries.aerox9".to_string(),
+            name: "SteelSeries Aerox 9 Wireless".to_string(),
             connection_mode: if product_id == 0x1858 {
                 crate::devices::ConnectionMode::Wireless
             } else {
@@ -310,9 +312,10 @@ mod tests {
     #[test]
     fn replacement_may_have_new_device_path() {
         let current = test_device("old-instance", 0x1858, None);
-        let replacement = test_device("new-instance", 0x1858, None);
 
-        let found = find_replacement(&current, std::slice::from_ref(&replacement))
+        let replacement = test_device("new-instance", 0x1858, None).hardware;
+
+        let found = find_replacement_hardware(&current, std::slice::from_ref(&replacement))
             .expect("replacement search should succeed")
             .expect("replacement should be found");
 
@@ -322,10 +325,11 @@ mod tests {
     #[test]
     fn replacement_respects_serial_number() {
         let current = test_device("old-instance", 0x1858, Some("mouse-a"));
-        let wrong = test_device("other-instance", 0x1858, Some("mouse-b"));
+
+        let wrong = test_device("other-instance", 0x1858, Some("mouse-b")).hardware;
 
         assert!(
-            find_replacement(&current, &[wrong])
+            find_replacement_hardware(&current, &[wrong])
                 .expect("replacement search should succeed")
                 .is_none()
         );
@@ -334,10 +338,12 @@ mod tests {
     #[test]
     fn ambiguous_replacement_is_rejected() {
         let current = test_device("old-instance", 0x1858, None);
-        let first = test_device("first-instance", 0x1858, None);
-        let second = test_device("second-instance", 0x1858, None);
 
-        let error = find_replacement(&current, &[first, second])
+        let first = test_device("first-instance", 0x1858, None).hardware;
+
+        let second = test_device("second-instance", 0x1858, None).hardware;
+
+        let error = find_replacement_hardware(&current, &[first, second])
             .expect_err("ambiguous replacement must be rejected");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);

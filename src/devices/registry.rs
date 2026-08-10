@@ -1,18 +1,21 @@
 use std::{
     collections::HashSet,
     env, fs, io,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 use serde::Deserialize;
 
 use crate::discovery::{DiscoveredHardware, Transport as DiscoveryTransport};
 
+use super::{BatteryProtocol, ConnectionMode, RecognizedDevice};
+
 const REGISTRY_SCHEMA: u32 = 1;
 const MANIFEST_FILE_NAME: &str = "manifest.toml";
 
 pub(crate) struct DeviceRegistry {
     manifest: Manifest,
+    directory: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +56,99 @@ struct ManifestMatch {
     product_id: u16,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceProfile {
+    schema: u32,
+    id: String,
+    name: String,
+    protocol: RegistryProtocol,
+    connections: Vec<ProfileConnection>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum RegistryProtocol {
+    SteelseriesAeroxPrime,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+enum RegistryConnectionMode {
+    Wired,
+    Wireless,
+}
+
+impl RegistryConnectionMode {
+    const fn to_runtime(self) -> ConnectionMode {
+        match self {
+            Self::Wired => ConnectionMode::Wired,
+            Self::Wireless => ConnectionMode::Wireless,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+struct ProfileConnection {
+    mode: RegistryConnectionMode,
+    transport: RegistryTransport,
+    vendor_id: u16,
+    product_id: u16,
+    interface_number: u32,
+    usage_page: u16,
+    usage: u16,
+    battery_command: u8,
+}
+
+impl ManifestProfile {
+    fn supports(&self, hardware: &DiscoveredHardware) -> bool {
+        let (Some(vendor_id), Some(product_id)) = (hardware.vendor_id, hardware.product_id) else {
+            return false;
+        };
+
+        self.matches.iter().any(|device_match| {
+            device_match.transport.matches(hardware.transport)
+                && device_match.vendor_id == vendor_id
+                && device_match.product_id == product_id
+        })
+    }
+}
+
+impl ProfileConnection {
+    fn matches(&self, hardware: &DiscoveredHardware) -> bool {
+        self.transport.matches(hardware.transport)
+            && hardware.vendor_id == Some(self.vendor_id)
+            && hardware.product_id == Some(self.product_id)
+            && hardware.interface_number == Some(self.interface_number)
+            && hardware.usage_page == Some(self.usage_page)
+            && hardware.usage == Some(self.usage)
+    }
+}
+
+impl DeviceProfile {
+    fn recognize(&self, hardware: &DiscoveredHardware) -> Option<RecognizedDevice> {
+        let connection = self
+            .connections
+            .iter()
+            .find(|connection| connection.matches(hardware))?;
+
+        let battery_protocol = match self.protocol {
+            RegistryProtocol::SteelseriesAeroxPrime => BatteryProtocol::SteelSeriesAeroxPrime {
+                command: connection.battery_command,
+            },
+        };
+
+        Some(RecognizedDevice {
+            profile: self.id.clone(),
+            name: self.name.clone(),
+            connection_mode: connection.mode.to_runtime(),
+            battery_protocol,
+            hardware: hardware.clone(),
+        })
+    }
+}
+
 impl DeviceRegistry {
     pub(crate) fn discover() -> io::Result<Self> {
         let executable = env::current_exe()?;
@@ -75,17 +171,57 @@ impl DeviceRegistry {
     }
 
     pub(crate) fn supports(&self, hardware: &DiscoveredHardware) -> bool {
-        let (Some(vendor_id), Some(product_id)) = (hardware.vendor_id, hardware.product_id) else {
-            return false;
-        };
+        self.manifest
+            .profiles
+            .iter()
+            .any(|profile| profile.supports(hardware))
+    }
 
-        self.manifest.profiles.iter().any(|profile| {
-            profile.matches.iter().any(|device_match| {
-                device_match.transport.matches(hardware.transport)
-                    && device_match.vendor_id == vendor_id
-                    && device_match.product_id == product_id
-            })
-        })
+    pub(crate) fn recognize(
+        &self,
+        hardware: &[DiscoveredHardware],
+    ) -> io::Result<Vec<RecognizedDevice>> {
+        let mut recognized = Vec::new();
+
+        for manifest_profile in &self.manifest.profiles {
+            let candidates = hardware
+                .iter()
+                .filter(|hardware| manifest_profile.supports(hardware))
+                .collect::<Vec<_>>();
+
+            if candidates.is_empty() {
+                continue;
+            }
+
+            let profile = self.load_profile(manifest_profile)?;
+
+            recognized.extend(
+                candidates
+                    .into_iter()
+                    .filter_map(|hardware| profile.recognize(hardware)),
+            );
+        }
+
+        Ok(recognized)
+    }
+
+    fn load_profile(&self, manifest_profile: &ManifestProfile) -> io::Result<DeviceProfile> {
+        let profile_path = self.directory.join(&manifest_profile.path);
+
+        let contents = fs::read_to_string(&profile_path)?;
+
+        let profile = parse_profile(&contents, manifest_profile).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", profile_path.display()))
+        })?;
+
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "BarePulse registry: loaded profile {} from {}",
+            profile.id,
+            profile_path.display()
+        );
+
+        Ok(profile)
     }
 
     fn load_from_directory(directory: &Path) -> io::Result<Self> {
@@ -103,7 +239,10 @@ impl DeviceRegistry {
         #[cfg(debug_assertions)]
         eprintln!("BarePulse registry: loaded {}", manifest_path.display());
 
-        Ok(Self { manifest })
+        Ok(Self {
+            manifest,
+            directory: directory.to_path_buf(),
+        })
     }
 
     #[cfg(debug_assertions)]
@@ -227,6 +366,110 @@ fn validate_manifest(manifest: &Manifest) -> io::Result<()> {
     Ok(())
 }
 
+fn parse_profile(contents: &str, manifest_profile: &ManifestProfile) -> io::Result<DeviceProfile> {
+    let profile: DeviceProfile = toml::from_str(contents)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+
+    validate_profile(manifest_profile, &profile)?;
+
+    Ok(profile)
+}
+
+fn validate_profile(manifest_profile: &ManifestProfile, profile: &DeviceProfile) -> io::Result<()> {
+    if profile.schema != REGISTRY_SCHEMA {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unsupported device profile schema {}; expected {}",
+                profile.schema, REGISTRY_SCHEMA
+            ),
+        ));
+    }
+
+    if profile.id != manifest_profile.id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "device profile id {} does not match manifest id {}",
+                profile.id, manifest_profile.id
+            ),
+        ));
+    }
+
+    if profile.name.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("device profile {} has an empty name", profile.id),
+        ));
+    }
+
+    if profile.connections.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("device profile {} contains no connections", profile.id),
+        ));
+    }
+
+    let mut connection_identities = HashSet::new();
+    let mut coarse_matches = HashSet::new();
+
+    for connection in &profile.connections {
+        let identity = (
+            connection.mode,
+            connection.transport,
+            connection.vendor_id,
+            connection.product_id,
+            connection.interface_number,
+            connection.usage_page,
+            connection.usage,
+        );
+
+        if !connection_identities.insert(identity) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "device profile {} contains a duplicate connection",
+                    profile.id
+                ),
+            ));
+        }
+
+        let coarse_match = ManifestMatch {
+            transport: connection.transport,
+            vendor_id: connection.vendor_id,
+            product_id: connection.product_id,
+        };
+
+        if !manifest_profile.matches.contains(&coarse_match) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "device profile {} connection {:04X}:{:04X} \
+                     is missing from the registry manifest",
+                    profile.id, connection.vendor_id, connection.product_id
+                ),
+            ));
+        }
+
+        coarse_matches.insert(coarse_match);
+    }
+
+    for device_match in &manifest_profile.matches {
+        if !coarse_matches.contains(device_match) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "registry manifest match {:04X}:{:04X} \
+                     is missing from device profile {}",
+                    device_match.vendor_id, device_match.product_id, profile.id
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +511,7 @@ product_id = 0x185A
     fn registry() -> DeviceRegistry {
         DeviceRegistry {
             manifest: parse_manifest(VALID_MANIFEST).expect("valid test manifest"),
+            directory: PathBuf::new(),
         }
     }
 
@@ -321,5 +565,95 @@ product_id = 0x185A
         let error = parse_manifest(&invalid).expect_err("duplicate match should fail");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn profile_constructs_wireless_runtime_device() {
+        let manifest = parse_manifest(VALID_MANIFEST).expect("valid test manifest");
+
+        const VALID_PROFILE: &str = r#"
+schema = 1
+
+id = "steelseries.aerox9"
+name = "SteelSeries Aerox 9 Wireless"
+protocol = "steelseries-aerox-prime"
+
+[[connections]]
+mode = "wireless"
+transport = "usb-hid"
+vendor_id = 0x1038
+product_id = 0x1858
+interface_number = 3
+usage_page = 0xFFC0
+usage = 1
+battery_command = 0xD2
+
+[[connections]]
+mode = "wired"
+transport = "usb-hid"
+vendor_id = 0x1038
+product_id = 0x185A
+interface_number = 3
+usage_page = 0xFFC0
+usage = 1
+battery_command = 0x92
+"#;
+
+        let profile =
+            parse_profile(VALID_PROFILE, &manifest.profiles[0]).expect("valid test device profile");
+
+        let recognized = profile
+            .recognize(&hardware(0x1038, 0x1858))
+            .expect("wireless Aerox should match profile");
+
+        assert_eq!(recognized.profile, "steelseries.aerox9");
+        assert_eq!(recognized.name, "SteelSeries Aerox 9 Wireless");
+        assert_eq!(recognized.connection_mode, ConnectionMode::Wireless);
+        assert_eq!(
+            recognized.battery_protocol,
+            BatteryProtocol::SteelSeriesAeroxPrime { command: 0xD2 }
+        );
+    }
+
+    #[test]
+    fn profile_rejects_non_management_interface() {
+        let manifest = parse_manifest(VALID_MANIFEST).expect("valid test manifest");
+
+        const VALID_PROFILE: &str = r#"
+schema = 1
+
+id = "steelseries.aerox9"
+name = "SteelSeries Aerox 9 Wireless"
+protocol = "steelseries-aerox-prime"
+
+[[connections]]
+mode = "wireless"
+transport = "usb-hid"
+vendor_id = 0x1038
+product_id = 0x1858
+interface_number = 3
+usage_page = 0xFFC0
+usage = 1
+battery_command = 0xD2
+
+[[connections]]
+mode = "wired"
+transport = "usb-hid"
+vendor_id = 0x1038
+product_id = 0x185A
+interface_number = 3
+usage_page = 0xFFC0
+usage = 1
+battery_command = 0x92
+"#;
+
+        let profile =
+            parse_profile(VALID_PROFILE, &manifest.profiles[0]).expect("valid test device profile");
+
+        let mut wrong_interface = hardware(0x1038, 0x1858);
+
+        wrong_interface.interface_number = Some(4);
+
+        assert!(profile.recognize(&wrong_interface).is_none());
     }
 }

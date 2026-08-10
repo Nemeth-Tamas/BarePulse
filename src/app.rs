@@ -20,7 +20,7 @@ pub(crate) fn run() -> io::Result<()> {
     let device_registry = devices::DeviceRegistry::discover()?;
 
     let discovered_hardware = discovery::discover()?;
-    let recognized_devices = devices::recognize(&discovered_hardware, &device_registry);
+    let recognized_devices = devices::recognize(&discovered_hardware, &device_registry)?;
 
     if persist_recognized_devices(&mut config, &recognized_devices) {
         config_store.save(&config)?;
@@ -161,7 +161,7 @@ fn reconcile_after_hardware_arrival(
         }
     };
 
-    let recognized_devices = devices::recognize(&discovered_hardware, device_registry);
+    let recognized_devices = devices::recognize(&discovered_hardware, device_registry)?;
 
     let config_changed = persist_recognized_devices(config, &recognized_devices);
 
@@ -326,7 +326,7 @@ fn run_reconnect_test(sessions: &mut [DeviceSession]) {
 
     for poll in 1..=RECONNECT_TEST_POLLS {
         for session in sessions.iter_mut() {
-            let device_name = session.device().name;
+            let device_name = session.device().name.clone();
 
             let command = match session.device().battery_protocol {
                 BatteryProtocol::SteelSeriesAeroxPrime { command } => command,
@@ -426,8 +426,8 @@ mod tests {
 
     fn recognized_device() -> RecognizedDevice {
         RecognizedDevice {
-            profile: "steelseries.aerox9",
-            name: "SteelSeries Aerox 9 Wireless",
+            profile: "steelseries.aerox9".to_string(),
+            name: "SteelSeries Aerox 9 Wireless".to_string(),
             connection_mode: devices::ConnectionMode::Wired,
             hardware: discovery::DiscoveredHardware {
                 transport: Transport::UsbHid,
