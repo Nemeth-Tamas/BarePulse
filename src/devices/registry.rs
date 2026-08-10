@@ -170,6 +170,7 @@ impl DeviceRegistry {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn supports(&self, hardware: &DiscoveredHardware) -> bool {
         self.manifest
             .profiles
