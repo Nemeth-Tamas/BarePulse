@@ -8,8 +8,8 @@ use windows_sys::Win32::{
     Foundation::{HWND, POINT},
     UI::{
         Shell::{
-            NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
-            Shell_NotifyIconW,
+            NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE,
+            NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
         },
         WindowsAndMessaging::{
             AppendMenuW, CreateIcon, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
@@ -241,6 +241,41 @@ pub(super) fn update(window: HWND, statuses: &[DeviceStatus]) -> io::Result<()> 
 
     if modified == 0 {
         return Err(io::Error::other("Shell_NotifyIconW(NIM_MODIFY) failed"));
+    }
+
+    Ok(())
+}
+
+pub(super) fn show_low_battery_notification(
+    window: HWND,
+    status: &DeviceStatus,
+    level: u8,
+) -> io::Result<()> {
+    // SAFETY:
+    // NOTIFYICONDATAW permits zero initialization. NIF_INFO selects the
+    // notification text/title fields for an existing notification-area icon.
+    let mut tray_data: NOTIFYICONDATAW = unsafe { zeroed() };
+
+    tray_data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+    tray_data.hWnd = window;
+    tray_data.uID = ICON_ID;
+    tray_data.uFlags = NIF_INFO;
+    tray_data.dwInfoFlags = NIIF_WARNING;
+
+    copy_wide_to_buffer("BarePulse low battery", &mut tray_data.szInfoTitle);
+
+    copy_wide_to_buffer(
+        &format!("{} battery is at {level}%.", status.name),
+        &mut tray_data.szInfo,
+    );
+
+    // SAFETY:
+    // window plus ICON_ID identifies our existing notification-area icon.
+    // NIF_INFO requests a notification using the populated text fields.
+    if unsafe { Shell_NotifyIconW(NIM_MODIFY, &tray_data) } == 0 {
+        return Err(io::Error::other(
+            "Shell_NotifyIconW low-battery notification failed",
+        ));
     }
 
     Ok(())

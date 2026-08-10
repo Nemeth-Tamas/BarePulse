@@ -16,7 +16,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::devices::DeviceStatus;
+use crate::devices::{BatteryState, ConnectionState, DeviceStatus};
 
 use super::{tray, wide_null};
 
@@ -27,9 +27,63 @@ static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
 
 const STATUS_TIMER_ID: usize = 1;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LowBatteryNotificationState {
+    last_threshold: Option<u8>,
+}
+
+impl LowBatteryNotificationState {
+    fn observe(&mut self, status: &DeviceStatus) -> Option<u8> {
+        if status.connection != ConnectionState::Connected {
+            return None;
+        }
+
+        let level = match status.battery {
+            BatteryState::Level(level) => level,
+
+            BatteryState::Charging(level) => {
+                if level > 25 {
+                    self.last_threshold = None;
+                }
+
+                return None;
+            }
+
+            BatteryState::Unknown => return None,
+        };
+
+        if level > 25 {
+            self.last_threshold = None;
+            return None;
+        }
+
+        let threshold = if level <= 5 {
+            5
+        } else if level <= 10 {
+            10
+        } else if level <= 20 {
+            20
+        } else {
+            return None;
+        };
+
+        if self
+            .last_threshold
+            .is_some_and(|previous| threshold >= previous)
+        {
+            return None;
+        }
+
+        self.last_threshold = Some(threshold);
+
+        Some(level)
+    }
+}
+
 struct WindowState {
     statuses: Vec<DeviceStatus>,
     refresh: Box<dyn FnMut() -> Vec<DeviceStatus>>,
+    low_battery_notifications: Vec<LowBatteryNotificationState>,
 }
 
 thread_local! {
@@ -45,9 +99,13 @@ where
     F: FnMut() -> Vec<DeviceStatus> + 'static,
 {
     WINDOW_STATE.with(|state| {
+        let low_battery_notifications =
+            vec![LowBatteryNotificationState::default(); initial_statuses.len()];
+
         *state.borrow_mut() = Some(WindowState {
             statuses: initial_statuses,
             refresh: Box::new(refresh),
+            low_battery_notifications,
         });
     });
 
@@ -127,6 +185,15 @@ fn run_window(poll_interval_seconds: u64) -> io::Result<()> {
 
     tray::add(window, &statuses)?;
 
+    process_current_low_battery(window)?;
+
+    #[cfg(debug_assertions)]
+    if std::env::var_os("BAREPULSE_NOTIFICATION_TEST").is_some() {
+        if let Some(status) = statuses.first() {
+            tray::show_low_battery_notification(window, status, 20)?;
+        }
+    }
+
     let poll_interval = poll_interval_milliseconds(poll_interval_seconds);
 
     // SAFETY:
@@ -150,6 +217,38 @@ fn status_snapshot() -> Vec<DeviceStatus> {
     })
 }
 
+fn process_current_low_battery(window: HWND) -> io::Result<()> {
+    WINDOW_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+
+        let state = state
+            .as_mut()
+            .ok_or_else(|| io::Error::other("BarePulse window state is unavailable"))?;
+
+        let statuses = state.statuses.clone();
+
+        process_low_battery_notifications(window, &statuses, &mut state.low_battery_notifications)
+    })
+}
+
+fn process_low_battery_notifications(
+    window: HWND,
+    statuses: &[DeviceStatus],
+    notification_states: &mut Vec<LowBatteryNotificationState>,
+) -> io::Result<()> {
+    notification_states.resize(statuses.len(), LowBatteryNotificationState::default());
+
+    notification_states.truncate(statuses.len());
+
+    for (status, notification_state) in statuses.iter().zip(notification_states) {
+        if let Some(level) = notification_state.observe(status) {
+            tray::show_low_battery_notification(window, status, level)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn refresh_status(window: HWND) -> io::Result<()> {
     WINDOW_STATE.with(|state| {
         let mut state = state.borrow_mut();
@@ -159,6 +258,12 @@ fn refresh_status(window: HWND) -> io::Result<()> {
             .ok_or_else(|| io::Error::other("BarePulse window state is unavailable"))?;
 
         let refreshed = (state.refresh)();
+
+        process_low_battery_notifications(
+            window,
+            &refreshed,
+            &mut state.low_battery_notifications,
+        )?;
 
         if refreshed == state.statuses {
             return Ok(());
@@ -289,5 +394,134 @@ unsafe extern "system" fn window_proc(
             // supplied by Windows.
             unsafe { DefWindowProcW(window, message, w_param, l_param) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::{ConnectionMode, DeviceStatus};
+
+    fn status(connection: ConnectionState, battery: BatteryState) -> DeviceStatus {
+        DeviceStatus {
+            name: "Test device".to_string(),
+            mode: ConnectionMode::Wireless,
+            connection,
+            battery,
+        }
+    }
+
+    #[test]
+    fn low_battery_thresholds_only_notify_once() {
+        let mut notification = LowBatteryNotificationState::default();
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(20),)),
+            Some(20)
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(20),)),
+            None
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(15),)),
+            None
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(10),)),
+            Some(10)
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(5),)),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn notification_rearms_after_battery_recovers() {
+        let mut notification = LowBatteryNotificationState::default();
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(20),)),
+            Some(20)
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(24),)),
+            None
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(20),)),
+            None
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(30),)),
+            None
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(20),)),
+            Some(20)
+        );
+    }
+
+    #[test]
+    fn charging_and_stale_states_do_not_notify() {
+        let mut notification = LowBatteryNotificationState::default();
+
+        assert_eq!(
+            notification.observe(&status(
+                ConnectionState::Connected,
+                BatteryState::Charging(10),
+            )),
+            None
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Sleeping, BatteryState::Level(10),)),
+            None
+        );
+
+        assert_eq!(
+            notification.observe(&status(
+                ConnectionState::Disconnected,
+                BatteryState::Level(10),
+            )),
+            None
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(10),)),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn charging_above_hysteresis_level_rearms_notifications() {
+        let mut notification = LowBatteryNotificationState::default();
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(20),)),
+            Some(20)
+        );
+
+        assert_eq!(
+            notification.observe(&status(
+                ConnectionState::Connected,
+                BatteryState::Charging(30),
+            )),
+            None
+        );
+
+        assert_eq!(
+            notification.observe(&status(ConnectionState::Connected, BatteryState::Level(20),)),
+            Some(20)
+        );
     }
 }
