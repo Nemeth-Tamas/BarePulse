@@ -71,19 +71,19 @@
 - [X] Add generic `DeviceStatus`
 - [X] Add generic connection state
 - [X] Add generic battery state
-- [ ] Display real Aerox battery in tooltip
-- [ ] Display wireless/wired connection state
-- [ ] Display sleeping/disconnected state
-- [ ] Build context menu from generic device state
-- [ ] Add manual Refresh
-- [ ] Add clean Exit
-- [ ] Add configurable/default polling interval
-- [ ] Avoid tray redraw when state is unchanged
-- [ ] Add dynamic battery tray icon
-- [ ] Add charging tray state
-- [ ] Add unknown/disconnected tray states
-- [ ] Add low-battery notifications
-- [ ] Add notification hysteresis
+- [X] Display real Aerox battery in tooltip
+- [X] Display wireless/wired connection state
+- [X] Display sleeping/disconnected state
+- [X] Build context menu from generic device state
+- [X] Add manual Refresh
+- [X] Add clean Exit
+- [X] Add configurable/default polling interval
+- [X] Avoid tray redraw when state is unchanged
+- [X] Add dynamic battery tray icon
+- [X] Add charging tray state
+- [X] Add unknown/disconnected tray states
+- [X] Add low-battery notifications
+- [X] Add notification hysteresis
 
 ## v0.1 acceptance
 
@@ -94,7 +94,7 @@
 - [X] Distinguishes wireless and wired operation
 - [X] Handles sleeping state
 - [X] Handles disconnect/reconnect
-- [ ] Shows useful battery status in Windows tray
+- [X] Shows useful battery status in Windows tray
 - [ ] Runs with negligible idle CPU usage
 - [ ] Requires no administrator privileges
 - [ ] Works as a portable application
