@@ -134,14 +134,14 @@
 - [X] Finalize portable directory structure
 - [X] Keep config beside executable
 - [X] Keep downloaded profiles beside executable
-- [ ] Produce portable release package
-- [ ] Design installer
-- [ ] Install under `%LOCALAPPDATA%\BarePulse`
+- [X] Produce portable release package
+- [X] Design installer
+- [X] Install under `%LOCALAPPDATA%\BarePulse`
 - [X] Avoid administrator requirement
-- [ ] Add optional Start Menu shortcut
-- [ ] Add optional Start with Windows
-- [ ] Use same executable for portable and installed modes where practical
-- [ ] Add clean uninstall behavior
+- [X] Add optional Start Menu shortcut
+- [X] Add optional Start with Windows
+- [X] Use same executable for portable and installed modes where practical
+- [X] Add clean uninstall behavior
 
 ## Milestone 8 — Additional hardware
 
