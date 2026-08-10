@@ -16,6 +16,7 @@ pub(crate) use status::{BatteryState, ConnectionMode, ConnectionState, DeviceSta
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BatteryProtocol {
     SteelSeriesAeroxPrime { command: u8 },
+    LogitechHidppAdc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

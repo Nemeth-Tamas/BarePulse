@@ -16,6 +16,8 @@ pub(crate) enum BatteryState {
     Unknown,
     Level(u8),
     Charging(u8),
+    EstimatedLevel(u8),
+    EstimatedCharging(u8),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

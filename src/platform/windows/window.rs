@@ -68,7 +68,9 @@ impl LowBatteryNotificationState {
                 return None;
             }
 
-            BatteryState::Unknown => return None,
+            BatteryState::EstimatedLevel(_)
+            | BatteryState::EstimatedCharging(_)
+            | BatteryState::Unknown => return None,
         };
 
         if level > 25 {

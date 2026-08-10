@@ -359,20 +359,16 @@ fn run_logitech_hidpp_test(hardware: &[discovery::DiscoveredHardware]) {
         }
     };
 
-    match logitech_hidpp::probe_battery(&device) {
-        Ok(probe) => {
+    match logitech_hidpp::query(&device) {
+        Ok(logitech_hidpp::QueryOutcome::Reading(reading)) => {
             eprintln!(
-                "BarePulse Logitech HID++ battery: feature={:?} index=0x{:02X} level={}% charging={} voltage={} raw_status=0x{:02X}",
-                probe.feature,
-                probe.feature_index,
-                probe.reading.level,
-                probe.reading.charging,
-                probe
-                    .voltage_mv
-                    .map(|voltage| { format!("{voltage}mV") })
-                    .unwrap_or_else(|| { "n/a".to_string() }),
-                probe.raw_status,
+                "BarePulse Logitech HID++ battery: level=~{}% charging={}",
+                reading.level, reading.charging,
             );
+        }
+
+        Ok(logitech_hidpp::QueryOutcome::Sleeping) => {
+            eprintln!("BarePulse Logitech HID++ battery: headset inactive");
         }
 
         Err(error) => {
@@ -551,6 +547,15 @@ fn run_reconnect_test(sessions: &mut [DeviceSession]) {
 
             let command = match session.device().battery_protocol {
                 BatteryProtocol::SteelSeriesAeroxPrime { command } => command,
+
+                BatteryProtocol::LogitechHidppAdc => {
+                    eprintln!(
+                        "BarePulse reconnect test: skipping non-SteelSeries device {}",
+                        session.device().name
+                    );
+
+                    continue;
+                }
             };
 
             match session.query_battery() {

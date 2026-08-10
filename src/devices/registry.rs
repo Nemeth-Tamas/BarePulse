@@ -87,6 +87,7 @@ struct DeviceProfile {
 #[serde(rename_all = "kebab-case")]
 enum RegistryProtocol {
     SteelseriesAeroxPrime,
+    LogitechHidppAdc,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
@@ -115,7 +116,8 @@ struct ProfileConnection {
     interface_number: u32,
     usage_page: u16,
     usage: u16,
-    battery_command: u8,
+    #[serde(default)]
+    battery_command: Option<u8>,
 }
 
 impl ManifestProfile {
@@ -152,8 +154,10 @@ impl DeviceProfile {
 
         let battery_protocol = match self.protocol {
             RegistryProtocol::SteelseriesAeroxPrime => BatteryProtocol::SteelSeriesAeroxPrime {
-                command: connection.battery_command,
+                command: connection.battery_command?,
             },
+
+            RegistryProtocol::LogitechHidppAdc => BatteryProtocol::LogitechHidppAdc,
         };
 
         Some(RecognizedDevice {
@@ -843,6 +847,30 @@ fn validate_profile(manifest_profile: &ManifestProfile, profile: &DeviceProfile)
     let mut coarse_matches = HashSet::new();
 
     for connection in &profile.connections {
+        match profile.protocol {
+            RegistryProtocol::SteelseriesAeroxPrime if connection.battery_command.is_none() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "SteelSeries profile {} connection is missing battery_command",
+                        profile.id
+                    ),
+                ));
+            }
+
+            RegistryProtocol::LogitechHidppAdc if connection.battery_command.is_some() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Logitech HID++ ADC profile {} must not define battery_command",
+                        profile.id
+                    ),
+                ));
+            }
+
+            _ => {}
+        }
+
         let identity = (
             connection.mode,
             connection.transport,

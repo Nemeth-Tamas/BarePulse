@@ -1,0 +1,14 @@
+schema = 1
+
+id = "logitech.pro-x-wireless"
+name = "Logitech PRO X Wireless Gaming Headset"
+protocol = "logitech-hidpp-adc"
+
+[[connections]]
+mode = "wireless"
+transport = "usb-hid"
+vendor_id = 0x046D
+product_id = 0x0ABA
+interface_number = 3
+usage_page = 0xFF43
+usage = 0x0202

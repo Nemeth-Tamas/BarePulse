@@ -37,40 +37,34 @@ const READ_SLICE: Duration = Duration::from_millis(50);
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BatteryFeature {
-    AdcMeasurement,
-    Unified,
-    BatteryLevelStatus,
+pub(crate) enum QueryOutcome {
+    Reading(BatteryReading),
+    Sleeping,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BatteryProbe {
-    pub(crate) feature: BatteryFeature,
-    pub(crate) feature_index: u8,
-    pub(crate) reading: BatteryReading,
-    pub(crate) voltage_mv: Option<u16>,
-    pub(crate) raw_status: u8,
-}
-
-pub(crate) fn probe_battery(device: &HidDevice) -> io::Result<BatteryProbe> {
+pub(crate) fn query(device: &HidDevice) -> io::Result<QueryOutcome> {
     require_long_reports(device)?;
 
-    if let Some(feature_index) = get_feature_index(device, FEATURE_ADC_MEASUREMENT)? {
-        return probe_adc_measurement(device, feature_index);
-    }
+    let result = if let Some(feature_index) = get_feature_index(device, FEATURE_ADC_MEASUREMENT)? {
+        probe_adc_measurement(device, feature_index)
+    } else if let Some(feature_index) = get_feature_index(device, FEATURE_UNIFIED_BATTERY)? {
+        probe_unified_battery(device, feature_index)
+    } else if let Some(feature_index) = get_feature_index(device, FEATURE_BATTERY_LEVEL_STATUS)? {
+        probe_battery_level_status(device, feature_index)
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Logitech device exposes none of HID++ battery features 0x1F20, 0x1004, or 0x1000",
+        ));
+    };
 
-    if let Some(feature_index) = get_feature_index(device, FEATURE_UNIFIED_BATTERY)? {
-        return probe_unified_battery(device, feature_index);
-    }
+    match result {
+        Ok(reading) => Ok(QueryOutcome::Reading(reading)),
 
-    if let Some(feature_index) = get_feature_index(device, FEATURE_BATTERY_LEVEL_STATUS)? {
-        return probe_battery_level_status(device, feature_index);
-    }
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(QueryOutcome::Sleeping),
 
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Logitech device exposes none of HID++ battery features 0x1F20, 0x1004, or 0x1000",
-    ))
+        Err(error) => Err(error),
+    }
 }
 
 fn require_long_reports(device: &HidDevice) -> io::Result<()> {
@@ -106,18 +100,18 @@ fn get_feature_index(device: &HidDevice, feature: u16) -> io::Result<Option<u8>>
     }
 }
 
-fn probe_adc_measurement(device: &HidDevice, feature_index: u8) -> io::Result<BatteryProbe> {
+fn probe_adc_measurement(device: &HidDevice, feature_index: u8) -> io::Result<BatteryReading> {
     let response = send_fap_command(device, feature_index, ADC_GET_MEASUREMENT, &[])?;
 
-    let (reading, voltage_mv, flags) = decode_adc_measurement(&response[4..])?;
+    let (reading, _voltage_mv, _flags) = decode_adc_measurement(&response[4..])?;
 
-    Ok(BatteryProbe {
-        feature: BatteryFeature::AdcMeasurement,
-        feature_index,
-        reading,
-        voltage_mv: Some(voltage_mv),
-        raw_status: flags,
-    })
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "BarePulse Logitech HID++ ADC: level=~{}% voltage={}mV charging={} flags=0x{:02X}",
+        reading.level, _voltage_mv, reading.charging, _flags,
+    );
+
+    Ok(reading)
 }
 
 fn decode_adc_measurement(params: &[u8]) -> io::Result<(BatteryReading, u16, u8)> {
@@ -197,7 +191,7 @@ fn estimate_adc_percentage(voltage_mv: u16) -> u8 {
     0
 }
 
-fn probe_unified_battery(device: &HidDevice, feature_index: u8) -> io::Result<BatteryProbe> {
+fn probe_unified_battery(device: &HidDevice, feature_index: u8) -> io::Result<BatteryReading> {
     let capabilities = send_fap_command(device, feature_index, UNIFIED_GET_CAPABILITIES, &[])?;
 
     /*
@@ -207,11 +201,11 @@ fn probe_unified_battery(device: &HidDevice, feature_index: u8) -> io::Result<Ba
      *
      * Bit 1 indicates state-of-charge percentage support.
      */
-    let supports_percentage = capabilities[5] & 0x02 != 0;
+    let _supports_percentage = capabilities[5] & 0x02 != 0;
 
     #[cfg(debug_assertions)]
     eprintln!(
-        "BarePulse Logitech HID++: unified battery capabilities levels=0x{:02X} flags=0x{:02X} percentage={supports_percentage}",
+        "BarePulse Logitech HID++: unified battery capabilities levels=0x{:02X} flags=0x{:02X} percentage={_supports_percentage}",
         capabilities[4], capabilities[5],
     );
 
@@ -219,27 +213,15 @@ fn probe_unified_battery(device: &HidDevice, feature_index: u8) -> io::Result<Ba
 
     let reading = decode_unified_status(&response[4..])?;
 
-    Ok(BatteryProbe {
-        feature: BatteryFeature::Unified,
-        feature_index,
-        reading,
-        voltage_mv: None,
-        raw_status: response[6],
-    })
+    Ok(reading)
 }
 
-fn probe_battery_level_status(device: &HidDevice, feature_index: u8) -> io::Result<BatteryProbe> {
+fn probe_battery_level_status(device: &HidDevice, feature_index: u8) -> io::Result<BatteryReading> {
     let response = send_fap_command(device, feature_index, BATTERY_LEVEL_GET_STATUS, &[])?;
 
     let reading = decode_battery_level_status(&response[4..])?;
 
-    Ok(BatteryProbe {
-        feature: BatteryFeature::BatteryLevelStatus,
-        feature_index,
-        reading,
-        voltage_mv: None,
-        raw_status: response[6],
-    })
+    Ok(reading)
 }
 
 fn decode_unified_status(params: &[u8]) -> io::Result<BatteryReading> {
@@ -356,6 +338,13 @@ fn send_fap_command(
 
             #[cfg(debug_assertions)]
             eprintln!("BarePulse Logitech HID++ error rx: {response:?}");
+
+            if error == 0x05 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Logitech HID++ device is present but inactive",
+                ));
+            }
 
             return Err(io::Error::other(format!(
                 "Logitech HID++ error 0x{error:02X}"

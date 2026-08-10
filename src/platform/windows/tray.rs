@@ -334,7 +334,10 @@ fn render_status_icon(
     match status {
         Some(status) => {
             match status.battery {
-                BatteryState::Level(level) | BatteryState::Charging(level) => {
+                BatteryState::Level(level)
+                | BatteryState::Charging(level)
+                | BatteryState::EstimatedLevel(level)
+                | BatteryState::EstimatedCharging(level) => {
                     draw_battery_level(&mut xor_mask, level);
                 }
 
@@ -351,7 +354,7 @@ fn render_status_icon(
                 }
 
                 ConnectionState::Connected => match status.battery {
-                    BatteryState::Charging(_) => {
+                    BatteryState::Charging(_) | BatteryState::EstimatedCharging(_) => {
                         draw_charging_mark(&mut xor_mask);
                     }
 
@@ -359,7 +362,7 @@ fn render_status_icon(
                         draw_unknown_mark(&mut xor_mask);
                     }
 
-                    BatteryState::Level(_) => {}
+                    BatteryState::Level(_) | BatteryState::EstimatedLevel(_) => {}
                 },
             }
         }
@@ -507,8 +510,22 @@ fn format_status(status: &DeviceStatus) -> String {
 
     let battery = match status.battery {
         BatteryState::Unknown => "Battery unknown".to_string(),
-        BatteryState::Level(level) => format!("{level}%"),
-        BatteryState::Charging(level) => format!("{level}% - Charging"),
+
+        BatteryState::Level(level) => {
+            format!("{level}%")
+        }
+
+        BatteryState::Charging(level) => {
+            format!("{level}% - Charging")
+        }
+
+        BatteryState::EstimatedLevel(level) => {
+            format!("~{level}% (estimated)")
+        }
+
+        BatteryState::EstimatedCharging(level) => {
+            format!("~{level}% - Charging (estimated)")
+        }
     };
 
     match status.connection {

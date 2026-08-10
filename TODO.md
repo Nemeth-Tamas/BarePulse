@@ -149,9 +149,9 @@
 
 - [X] Record exact Logitech headset model — Logitech PRO X Wireless Gaming Headset
 - [X] Determine receiver/transport — USB HID receiver `046D:0ABA`, control interface `MI_03`, vendor collections `FF43:0202` and `FF00:0001`
-- [ ] Determine battery protocol
-- [ ] Add required generic protocol support
-- [ ] Add Logitech device profile
+- [X] Determine battery protocol — HID++ 2.0 ADC Measurement `0x1F20`
+- [X] Add required generic protocol support
+- [X] Add Logitech device profile
 - [ ] Test without Logitech application running
 
 ### Sony WH-1000XM5

@@ -14,3 +14,13 @@ product_id = 0x1858
 transport = "usb-hid"
 vendor_id = 0x1038
 product_id = 0x185A
+
+[[profiles]]
+id = "logitech.pro-x-wireless"
+path = "logitech.pro-x-wireless.toml"
+sha256 = "fc948d8ae0c623b7e34f22a39f6c4768454b19d632ab04ab100474ce64c95d3d"
+
+[[profiles.matches]]
+transport = "usb-hid"
+vendor_id = 0x046D
+product_id = 0x0ABA
