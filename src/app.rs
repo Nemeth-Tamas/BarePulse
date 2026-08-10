@@ -17,8 +17,10 @@ pub(crate) fn run() -> io::Result<()> {
     let config_store = ConfigStore::discover()?;
     let mut config = config_store.load_or_create()?;
 
+    let device_registry = devices::DeviceRegistry::discover()?;
+
     let discovered_hardware = discovery::discover()?;
-    let recognized_devices = devices::recognize(&discovered_hardware);
+    let recognized_devices = devices::recognize(&discovered_hardware, &device_registry);
 
     if persist_recognized_devices(&mut config, &recognized_devices) {
         config_store.save(&config)?;
@@ -48,6 +50,7 @@ pub(crate) fn run() -> io::Result<()> {
                 &config_store,
                 &mut config,
                 &mut device_sessions,
+                &device_registry,
                 &device_paths,
             )?;
         }
@@ -124,6 +127,7 @@ fn reconcile_after_hardware_arrival(
     config_store: &ConfigStore,
     config: &mut Config,
     sessions: &mut Vec<DeviceSession>,
+    device_registry: &devices::DeviceRegistry,
     device_paths: &[String],
 ) -> io::Result<()> {
     let discovered_hardware = if device_paths.is_empty() {
@@ -157,7 +161,7 @@ fn reconcile_after_hardware_arrival(
         }
     };
 
-    let recognized_devices = devices::recognize(&discovered_hardware);
+    let recognized_devices = devices::recognize(&discovered_hardware, device_registry);
 
     let config_changed = persist_recognized_devices(config, &recognized_devices);
 

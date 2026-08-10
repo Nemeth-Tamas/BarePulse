@@ -117,7 +117,7 @@
 - [X] Add SteelSeries Aerox 9 registry entry
 - [X] Add SteelSeries Aerox 9 profile
 - [ ] Retrieve registry manifest from GitHub
-- [ ] Match discovered hardware against registry
+- [X] Match discovered hardware against registry
 - [ ] Download only profiles needed by detected hardware
 - [ ] Cache profiles locally
 - [ ] Operate offline using cached profiles

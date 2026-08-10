@@ -1,9 +1,11 @@
+mod registry;
 mod session;
 mod status;
 mod steelseries;
 
 use crate::discovery::DiscoveredHardware;
 
+pub(crate) use registry::DeviceRegistry;
 pub(crate) use session::{BatteryPoll, DeviceSession};
 pub(crate) use status::{BatteryState, ConnectionMode, ConnectionState, DeviceStatus};
 
@@ -21,6 +23,17 @@ pub(crate) struct RecognizedDevice {
     pub(crate) hardware: DiscoveredHardware,
 }
 
-pub(crate) fn recognize(hardware: &[DiscoveredHardware]) -> Vec<RecognizedDevice> {
-    steelseries::recognize(hardware)
+pub(crate) fn recognize(
+    hardware: &[DiscoveredHardware],
+    registry: &DeviceRegistry,
+) -> Vec<RecognizedDevice> {
+    hardware
+        .iter()
+        .filter(|hardware| registry.supports(hardware))
+        .filter_map(steelseries::recognize)
+        .collect()
+}
+
+pub(crate) fn recognize_known(hardware: &[DiscoveredHardware]) -> Vec<RecognizedDevice> {
+    hardware.iter().filter_map(steelseries::recognize).collect()
 }

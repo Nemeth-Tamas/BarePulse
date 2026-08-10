@@ -10,7 +10,7 @@ use crate::{
 };
 
 use super::{
-    BatteryProtocol, BatteryState, ConnectionState, DeviceStatus, RecognizedDevice, recognize,
+    BatteryProtocol, BatteryState, ConnectionState, DeviceStatus, RecognizedDevice, recognize_known,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +116,7 @@ impl DeviceSession {
             )
         })?;
 
-        let recognized_devices = recognize(&discovered_hardware);
+        let recognized_devices = recognize_known(&discovered_hardware);
 
         let replacement =
             find_replacement(&self.device, &recognized_devices)?.ok_or_else(|| {
