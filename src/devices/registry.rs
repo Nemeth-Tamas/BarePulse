@@ -2,6 +2,7 @@ use std::{
     collections::HashSet,
     env, fs, io,
     path::{Component, Path, PathBuf},
+    process,
 };
 
 use serde::Deserialize;
@@ -18,8 +19,10 @@ const MANIFEST_FILE_NAME: &str = "manifest.toml";
 
 const REGISTRY_GITHUB_HOST: &str = "raw.githubusercontent.com";
 const REGISTRY_GITHUB_MANIFEST_PATH: &str = "/Nemeth-Tamas/BarePulse/main/devices/manifest.toml";
+const REGISTRY_GITHUB_DEVICES_PATH: &str = "/Nemeth-Tamas/BarePulse/main/devices";
 
 const MAXIMUM_MANIFEST_BYTES: usize = 128 * 1024;
+const MAXIMUM_PROFILE_BYTES: usize = 512 * 1024;
 
 pub(crate) struct DeviceRegistry {
     manifest: Manifest,
@@ -252,7 +255,19 @@ impl DeviceRegistry {
                 continue;
             }
 
-            let profile = self.load_profile(manifest_profile)?;
+            let profile = match self.load_profile(manifest_profile) {
+                Ok(profile) => profile,
+
+                Err(error) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "BarePulse registry: profile {} unavailable: {error}",
+                        manifest_profile.id
+                    );
+
+                    continue;
+                }
+            };
 
             recognized.extend(
                 candidates
@@ -267,20 +282,96 @@ impl DeviceRegistry {
     fn load_profile(&self, manifest_profile: &ManifestProfile) -> io::Result<DeviceProfile> {
         let profile_path = self.directory.join(&manifest_profile.path);
 
-        let contents = fs::read_to_string(&profile_path)?;
+        match fs::read_to_string(&profile_path) {
+            Ok(contents) => {
+                let profile = parse_profile(&contents, manifest_profile).map_err(|error| {
+                    io::Error::new(error.kind(), format!("{}: {error}", profile_path.display()))
+                })?;
 
-        let profile = parse_profile(&contents, manifest_profile).map_err(|error| {
-            io::Error::new(error.kind(), format!("{}: {error}", profile_path.display()))
-        })?;
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "BarePulse registry: loaded profile {} from {}",
+                    profile.id,
+                    profile_path.display()
+                );
+
+                Ok(profile)
+            }
+
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.download_profile_temporarily(manifest_profile)
+            }
+
+            Err(error) => Err(error),
+        }
+    }
+
+    fn download_profile_temporarily(
+        &self,
+        manifest_profile: &ManifestProfile,
+    ) -> io::Result<DeviceProfile> {
+        #[cfg(debug_assertions)]
+        if env::var_os("BAREPULSE_REGISTRY_OFFLINE_TEST").is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "remote profile fetch skipped by offline test",
+            ));
+        }
+
+        let remote_path = github_profile_path(&manifest_profile.path);
 
         #[cfg(debug_assertions)]
         eprintln!(
-            "BarePulse registry: loaded profile {} from {}",
-            profile.id,
-            profile_path.display()
+            "BarePulse registry: downloading required profile {}",
+            manifest_profile.id
         );
 
-        Ok(profile)
+        let contents =
+            windows_web::get_https_text(REGISTRY_GITHUB_HOST, &remote_path, MAXIMUM_PROFILE_BYTES)?;
+
+        let temporary_path = temporary_profile_path(&self.directory, manifest_profile)?;
+
+        if let Some(parent) = temporary_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let result = (|| {
+            fs::write(&temporary_path, contents.as_bytes())?;
+
+            let written_contents = fs::read_to_string(&temporary_path)?;
+
+            let profile = parse_profile(&written_contents, manifest_profile).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", temporary_path.display()),
+                )
+            })?;
+
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "BarePulse registry: downloaded and validated profile {} via temporary file {}",
+                profile.id,
+                temporary_path.display()
+            );
+
+            Ok(profile)
+        })();
+
+        let cleanup_result = fs::remove_file(&temporary_path);
+
+        match (result, cleanup_result) {
+            (Ok(profile), Ok(())) => Ok(profile),
+
+            (Ok(_), Err(error)) => Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "validated temporary profile could not be removed: {}: {error}",
+                    temporary_path.display()
+                ),
+            )),
+
+            (Err(error), _) => Err(error),
+        }
     }
 
     fn load_from_directory(directory: &Path) -> io::Result<Self> {
@@ -315,6 +406,42 @@ impl DeviceRegistry {
     fn load_debug_fallback(portable_error: io::Error) -> io::Result<Self> {
         Err(portable_error)
     }
+}
+
+fn github_profile_path(profile_path: &str) -> String {
+    let profile_path = profile_path.replace('\\', "/");
+
+    format!("{REGISTRY_GITHUB_DEVICES_PATH}/{profile_path}")
+}
+
+fn temporary_profile_path(
+    directory: &Path,
+    manifest_profile: &ManifestProfile,
+) -> io::Result<PathBuf> {
+    let destination = directory.join(&manifest_profile.path);
+
+    let parent = destination.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "device profile {} has no parent directory",
+                manifest_profile.id
+            ),
+        )
+    })?;
+
+    let file_name = destination.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("device profile {} has no file name", manifest_profile.id),
+        )
+    })?;
+
+    let mut temporary_name = file_name.to_os_string();
+
+    temporary_name.push(format!(".{}.download.tmp", process::id()));
+
+    Ok(parent.join(temporary_name))
 }
 
 fn parse_manifest(contents: &str) -> io::Result<Manifest> {
@@ -714,5 +841,28 @@ battery_command = 0x92
         wrong_interface.interface_number = Some(4);
 
         assert!(profile.recognize(&wrong_interface).is_none());
+    }
+
+    #[test]
+    fn github_profile_path_uses_devices_directory() {
+        assert_eq!(
+            github_profile_path("steelseries.aerox9.toml"),
+            "/Nemeth-Tamas/BarePulse/main/devices/steelseries.aerox9.toml"
+        );
+    }
+
+    #[test]
+    fn temporary_profile_path_is_process_scoped() {
+        let manifest = parse_manifest(VALID_MANIFEST).expect("valid test manifest");
+
+        let path = temporary_profile_path(Path::new("devices"), &manifest.profiles[0])
+            .expect("temporary profile path");
+
+        let expected_suffix = format!("steelseries.aerox9.toml.{}.download.tmp", process::id());
+
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(expected_suffix.as_str())
+        );
     }
 }

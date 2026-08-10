@@ -118,12 +118,12 @@
 - [X] Add SteelSeries Aerox 9 profile
 - [X] Retrieve registry manifest from GitHub
 - [X] Match discovered hardware against registry
-- [ ] Download only profiles needed by detected hardware
+- [X] Download only profiles needed by detected hardware
 - [ ] Cache profiles locally
 - [ ] Operate offline using cached profiles
-- [ ] Validate downloaded profile schema
+- [X] Validate downloaded profile schema
 - [ ] Add SHA-256 profile verification
-- [ ] Download profiles to temporary files
+- [X] Download profiles to temporary files
 - [ ] Atomically replace verified profiles
 - [ ] Retain last-known-good profile after failed update
 - [ ] Define registry/profile update policy
