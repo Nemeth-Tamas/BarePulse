@@ -1,3 +1,6 @@
+#[cfg(debug_assertions)]
+pub(crate) mod logitech_hidpp;
+
 pub(crate) mod steelseries_aerox_prime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

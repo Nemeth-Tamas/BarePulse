@@ -17,7 +17,7 @@ use crate::{
 };
 
 #[cfg(debug_assertions)]
-use crate::{devices::BatteryPoll, transports::windows_hid::HidDevice};
+use crate::{devices::BatteryPoll, protocols::logitech_hidpp, transports::windows_hid::HidDevice};
 
 #[cfg(any(debug_assertions, test))]
 use crate::devices::BatteryProtocol;
@@ -40,6 +40,10 @@ pub(crate) fn run() -> io::Result<()> {
     #[cfg(debug_assertions)]
     {
         log_discovery(&discovered_hardware, &recognized_devices);
+
+        if logitech_hidpp_test_requested() {
+            run_logitech_hidpp_test(&discovered_hardware);
+        }
 
         if logitech_passive_test_requested() {
             run_logitech_passive_test(&discovered_hardware);
@@ -308,10 +312,70 @@ const LOGITECH_PRO_X_PRODUCT_ID: u16 = 0x0ABA;
 const LOGITECH_CONTROL_INTERFACE: u32 = 3;
 
 #[cfg(debug_assertions)]
+const LOGITECH_HIDPP_USAGE_PAGE: u16 = 0xFF43;
+
+#[cfg(debug_assertions)]
+const LOGITECH_HIDPP_USAGE: u16 = 0x0202;
+
+#[cfg(debug_assertions)]
 const LOGITECH_PASSIVE_TEST_DURATION: Duration = Duration::from_secs(30);
 
 #[cfg(debug_assertions)]
 const LOGITECH_PASSIVE_READ_TIMEOUT: Duration = Duration::from_millis(50);
+
+#[cfg(debug_assertions)]
+fn logitech_hidpp_test_requested() -> bool {
+    env::var_os("BAREPULSE_LOGITECH_HIDPP_TEST").is_some()
+}
+
+#[cfg(debug_assertions)]
+fn run_logitech_hidpp_test(hardware: &[discovery::DiscoveredHardware]) {
+    let candidate = hardware.iter().find(|device| {
+        device.vendor_id == Some(LOGITECH_VENDOR_ID)
+            && device.product_id == Some(LOGITECH_PRO_X_PRODUCT_ID)
+            && device.interface_number == Some(LOGITECH_CONTROL_INTERFACE)
+            && device.usage_page == Some(LOGITECH_HIDPP_USAGE_PAGE)
+            && device.usage == Some(LOGITECH_HIDPP_USAGE)
+    });
+
+    let Some(candidate) = candidate else {
+        eprintln!("BarePulse Logitech HID++ test: FF43:0202 collection not found");
+
+        return;
+    };
+
+    eprintln!(
+        "BarePulse Logitech HID++ test: opening {}",
+        candidate.hardware_key
+    );
+
+    let device = match HidDevice::open(&candidate.device_path) {
+        Ok(device) => device,
+
+        Err(error) => {
+            eprintln!("BarePulse Logitech HID++ test: open failed: {error}");
+
+            return;
+        }
+    };
+
+    match logitech_hidpp::probe_battery(&device) {
+        Ok(probe) => {
+            eprintln!(
+                "BarePulse Logitech HID++ battery: feature={:?} index=0x{:02X} level={}% charging={} raw_status=0x{:02X}",
+                probe.feature,
+                probe.feature_index,
+                probe.reading.level,
+                probe.reading.charging,
+                probe.raw_status,
+            );
+        }
+
+        Err(error) => {
+            eprintln!("BarePulse Logitech HID++ battery probe failed: {error}");
+        }
+    }
+}
 
 #[cfg(debug_assertions)]
 fn logitech_passive_test_requested() -> bool {
