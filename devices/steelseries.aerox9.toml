@@ -1,0 +1,25 @@
+schema = 1
+
+id = "steelseries.aerox9"
+name = "SteelSeries Aerox 9 Wireless"
+protocol = "steelseries-aerox-prime"
+
+[[connections]]
+mode = "wireless"
+transport = "usb-hid"
+vendor_id = 0x1038
+product_id = 0x1858
+interface_number = 3
+usage_page = 0xFFC0
+usage = 1
+battery_command = 0xD2
+
+[[connections]]
+mode = "wired"
+transport = "usb-hid"
+vendor_id = 0x1038
+product_id = 0x185A
+interface_number = 3
+usage_page = 0xFFC0
+usage = 1
+battery_command = 0x92

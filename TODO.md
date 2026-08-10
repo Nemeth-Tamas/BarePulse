@@ -111,11 +111,11 @@
 
 ## Milestone 6 — Device profile registry
 
-- [ ] Define device-profile schema
-- [ ] Create repository `devices/` directory
-- [ ] Create `devices/manifest.toml`
-- [ ] Add SteelSeries Aerox 9 registry entry
-- [ ] Add SteelSeries Aerox 9 profile
+- [X] Define device-profile schema
+- [X] Create repository `devices/` directory
+- [X] Create `devices/manifest.toml`
+- [X] Add SteelSeries Aerox 9 registry entry
+- [X] Add SteelSeries Aerox 9 profile
 - [ ] Retrieve registry manifest from GitHub
 - [ ] Match discovered hardware against registry
 - [ ] Download only profiles needed by detected hardware

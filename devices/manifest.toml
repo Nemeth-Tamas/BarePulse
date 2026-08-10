@@ -1,0 +1,15 @@
+schema = 1
+
+[[profiles]]
+id = "steelseries.aerox9"
+path = "steelseries.aerox9.toml"
+
+[[profiles.matches]]
+transport = "usb-hid"
+vendor_id = 0x1038
+product_id = 0x1858
+
+[[profiles.matches]]
+transport = "usb-hid"
+vendor_id = 0x1038
+product_id = 0x185A
