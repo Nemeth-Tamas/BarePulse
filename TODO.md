@@ -101,11 +101,11 @@
 
 ## Milestone 5 — Native device events
 
-- [ ] Register for relevant Windows device notifications
-- [ ] Detect hardware arrival
-- [ ] Detect hardware removal
+- [X] Register for relevant Windows device notifications
+- [X] Detect hardware arrival
+- [X] Detect hardware removal
 - [ ] Perform targeted rediscovery on arrival
-- [ ] Perform immediate refresh after reconnect
+- [X] Perform immediate refresh after reconnect
 - [ ] Avoid full periodic hardware rescans
 - [ ] Update persistent device configuration when new hardware appears
 
