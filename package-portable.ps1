@@ -32,10 +32,10 @@ Push-Location $repositoryRoot
 try {
     Write-Host "Building BarePulse release..."
 
-    cargo build --release
+    cargo rustc --release -- -D warnings
 
     if ($LASTEXITCODE -ne 0) {
-        throw "cargo build --release failed with exit code $LASTEXITCODE"
+        throw "release build failed with exit code $LASTEXITCODE"
     }
 
     if (-not (Test-Path $releaseExe -PathType Leaf)) {

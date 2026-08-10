@@ -6,8 +6,11 @@ use crate::{
         BatteryReading,
         steelseries_aerox_prime::{self, QueryOutcome},
     },
-    transports::windows_hid::{HidDevice, HidReportLengths},
+    transports::windows_hid::HidDevice,
 };
+
+#[cfg(debug_assertions)]
+use crate::transports::windows_hid::HidReportLengths;
 
 use super::{BatteryProtocol, BatteryState, ConnectionState, DeviceStatus, RecognizedDevice};
 
@@ -38,6 +41,7 @@ impl DeviceSession {
         &self.device
     }
 
+    #[cfg(debug_assertions)]
     pub(crate) const fn report_lengths(&self) -> HidReportLengths {
         self.hid_device.report_lengths()
     }
@@ -65,10 +69,10 @@ impl DeviceSession {
 
             Ok(BatteryPoll::Sleeping) => ConnectionState::Sleeping,
 
-            Err(error) => {
+            Err(_error) => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "BarePulse status: {} poll failed: {error}",
+                    "BarePulse status: {} poll failed: {_error}",
                     self.device.name
                 );
 

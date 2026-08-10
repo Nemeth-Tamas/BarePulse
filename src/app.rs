@@ -8,10 +8,16 @@ use crate::{
         ConfigStore,
         model::{Config, DeviceTransport, DiscoveredDevice},
     },
-    devices::{self, BatteryPoll, BatteryProtocol, DeviceSession, DeviceStatus, RecognizedDevice},
+    devices::{self, DeviceSession, DeviceStatus, RecognizedDevice},
     discovery::{self, Transport},
     platform,
 };
+
+#[cfg(debug_assertions)]
+use crate::devices::BatteryPoll;
+
+#[cfg(any(debug_assertions, test))]
+use crate::devices::BatteryProtocol;
 
 pub(crate) fn run() -> io::Result<()> {
     let config_store = ConfigStore::discover()?;
@@ -107,6 +113,7 @@ fn to_config_device(recognized: &RecognizedDevice) -> DiscoveredDevice {
     }
 }
 
+#[cfg(debug_assertions)]
 fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
     devices
         .iter()
@@ -114,12 +121,19 @@ fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
             Ok(session) => Some(session),
 
             Err(error) => {
-                #[cfg(debug_assertions)]
                 eprintln!("BarePulse HID open failed: {}: {error}", device.name);
 
                 None
             }
         })
+        .collect()
+}
+
+#[cfg(not(debug_assertions))]
+fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
+    devices
+        .iter()
+        .filter_map(|device| DeviceSession::open(device.clone()).ok())
         .collect()
 }
 
@@ -149,10 +163,10 @@ fn reconcile_after_hardware_arrival(
         match discovery::discover_paths(device_paths) {
             Ok(hardware) => hardware,
 
-            Err(error) => {
+            Err(_error) => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "BarePulse targeted discovery failed: {error}; \
+                    "BarePulse targeted discovery failed: {_error}; \
                      falling back to full HID discovery"
                 );
 
@@ -165,7 +179,7 @@ fn reconcile_after_hardware_arrival(
 
     let config_changed = persist_recognized_devices(config, &recognized_devices);
 
-    let (rebound_sessions, added_sessions) =
+    let (_rebound_sessions, _added_sessions) =
         reconcile_arrived_device_sessions(sessions, &recognized_devices);
 
     if config_changed {
@@ -175,8 +189,8 @@ fn reconcile_after_hardware_arrival(
     #[cfg(debug_assertions)]
     eprintln!(
         "BarePulse arrival scan: {} supported arrival(s), \
-         {rebound_sessions} rebound session(s), \
-         {added_sessions} new session(s), \
+         {_rebound_sessions} rebound session(s), \
+         {_added_sessions} new session(s), \
          config_changed={config_changed}",
         recognized_devices.len(),
     );
@@ -207,11 +221,11 @@ fn reconcile_arrived_device_sessions(
                     );
                 }
 
-                Err(error) => {
+                Err(_error) => {
                     #[cfg(debug_assertions)]
                     eprintln!(
                         "BarePulse arrival scan: failed to rebind {}: \
-                         {error}",
+                         {_error}",
                         recognized.name
                     );
                 }
@@ -237,11 +251,11 @@ fn reconcile_arrived_device_sessions(
                 added += 1;
             }
 
-            Err(error) => {
+            Err(_error) => {
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "BarePulse arrival scan: failed to open {}: \
-                     {error}",
+                     {_error}",
                     recognized.name
                 );
             }

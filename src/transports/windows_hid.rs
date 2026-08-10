@@ -240,9 +240,9 @@ pub(crate) fn enumerate() -> io::Result<Vec<DiscoveredHardware>> {
             Ok(Some(device)) => devices.push(device),
             Ok(None) => {}
 
-            Err(error) => {
+            Err(_error) => {
                 #[cfg(debug_assertions)]
-                eprintln!("BarePulse discovery: skipping HID interface {index}: {error}");
+                eprintln!("BarePulse discovery: skipping HID interface {index}: {_error}");
             }
         }
 
@@ -315,16 +315,19 @@ fn inspect_interface(
     let parsed_product_id = parse_hex_field_u16(&instance_id, "pid_");
     let interface_number = parse_hex_field_u32(&instance_id, "mi_");
 
+    #[cfg(debug_assertions)]
     let metadata = match read_hid_metadata(&device_path) {
         Ok(metadata) => metadata,
 
         Err(error) => {
-            #[cfg(debug_assertions)]
             eprintln!("BarePulse discovery: metadata unavailable for {instance_id}: {error}");
 
             HidMetadata::default()
         }
     };
+
+    #[cfg(not(debug_assertions))]
+    let metadata = read_hid_metadata(&device_path).unwrap_or_default();
 
     Ok(Some(DiscoveredHardware {
         transport: Transport::UsbHid,

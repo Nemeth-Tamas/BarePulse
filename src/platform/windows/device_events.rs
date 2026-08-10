@@ -36,6 +36,7 @@ pub(super) enum Change {
     Removal,
 }
 
+#[cfg(debug_assertions)]
 impl Change {
     pub(super) const fn label(self) -> &'static str {
         match self {

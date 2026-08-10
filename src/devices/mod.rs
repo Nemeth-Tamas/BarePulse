@@ -7,7 +7,10 @@ use std::io;
 use crate::discovery::DiscoveredHardware;
 
 pub(crate) use registry::DeviceRegistry;
-pub(crate) use session::{BatteryPoll, DeviceSession};
+pub(crate) use session::DeviceSession;
+
+#[cfg(debug_assertions)]
+pub(crate) use session::BatteryPoll;
 pub(crate) use status::{BatteryState, ConnectionMode, ConnectionState, DeviceStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

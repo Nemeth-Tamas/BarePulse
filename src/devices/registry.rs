@@ -357,10 +357,10 @@ impl DeviceRegistry {
             let profile = match self.load_profile(manifest_profile) {
                 Ok(profile) => profile,
 
-                Err(error) => {
+                Err(_error) => {
                     #[cfg(debug_assertions)]
                     eprintln!(
-                        "BarePulse registry: profile {} unavailable: {error}",
+                        "BarePulse registry: profile {} unavailable: {_error}",
                         manifest_profile.id
                     );
 
@@ -399,21 +399,21 @@ impl DeviceRegistry {
                         Ok(profile)
                     }
 
-                    Err(hash_error) => {
+                    Err(_hash_error) => {
                         #[cfg(debug_assertions)]
                         eprintln!(
-                            "BarePulse registry: cached profile {} needs refresh: {hash_error}",
+                            "BarePulse registry: cached profile {} needs refresh: {_hash_error}",
                             manifest_profile.id
                         );
 
                         match self.download_and_cache_profile(manifest_profile) {
                             Ok(updated) => Ok(updated),
 
-                            Err(update_error) => {
+                            Err(_update_error) => {
                                 #[cfg(debug_assertions)]
                                 eprintln!(
                                     "BarePulse registry: profile {} refresh failed: {}; using last-known-good local profile",
-                                    manifest_profile.id, update_error
+                                    manifest_profile.id, _update_error
                                 );
 
                                 Ok(profile)
@@ -495,10 +495,10 @@ impl DeviceRegistry {
 
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
 
-                Err(error) => {
+                Err(_error) => {
                     #[cfg(debug_assertions)]
                     eprintln!(
-                        "BarePulse registry: failed to clean temporary profile {}: {error}",
+                        "BarePulse registry: failed to clean temporary profile {}: {_error}",
                         temporary_path.display()
                     );
                 }

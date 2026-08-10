@@ -36,6 +36,7 @@ pub(crate) enum RefreshReason {
     HardwareArrival(Vec<String>),
 }
 
+#[cfg(debug_assertions)]
 impl RefreshReason {
     const fn label(&self) -> &'static str {
         match self {
@@ -480,18 +481,18 @@ unsafe extern "system" fn window_proc(
                 reason.label()
             );
 
-            if let Err(error) = refresh_status(window, reason) {
+            if let Err(_error) = refresh_status(window, reason) {
                 #[cfg(debug_assertions)]
-                eprintln!("BarePulse device-event refresh failed: {error}");
+                eprintln!("BarePulse device-event refresh failed: {_error}");
             }
 
             0
         }
 
         WM_TIMER if w_param == STATUS_TIMER_ID => {
-            if let Err(error) = refresh_status(window, RefreshReason::StatusOnly) {
+            if let Err(_error) = refresh_status(window, RefreshReason::StatusOnly) {
                 #[cfg(debug_assertions)]
-                eprintln!("BarePulse tray refresh failed: {error}");
+                eprintln!("BarePulse tray refresh failed: {_error}");
             }
 
             0
@@ -502,9 +503,9 @@ unsafe extern "system" fn window_proc(
 
             match tray::handle_callback(window, l_param, &statuses) {
                 Ok(tray::Action::Refresh) => {
-                    if let Err(error) = refresh_status(window, RefreshReason::StatusOnly) {
+                    if let Err(_error) = refresh_status(window, RefreshReason::StatusOnly) {
                         #[cfg(debug_assertions)]
-                        eprintln!("BarePulse manual refresh failed: {error}");
+                        eprintln!("BarePulse manual refresh failed: {_error}");
                     }
                 }
 

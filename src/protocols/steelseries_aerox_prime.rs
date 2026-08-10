@@ -41,10 +41,10 @@ pub(crate) fn query(device: &HidDevice, command: u8) -> io::Result<QueryOutcome>
         match device.write_report(&request, WRITE_TIMEOUT) {
             Ok(()) => {}
 
-            Err(error) if write_attempt + 1 < WRITE_ATTEMPTS => {
+            Err(_error) if write_attempt + 1 < WRITE_ATTEMPTS => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "BarePulse battery: command 0x{command:02X} write attempt {} failed: {error}",
+                    "BarePulse battery: command 0x{command:02X} write attempt {} failed: {_error}",
                     write_attempt + 1
                 );
 
