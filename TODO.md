@@ -145,10 +145,10 @@
 
 ## Milestone 8 — Additional hardware
 
-### Logitech wireless headset
+### Logitech G PRO X Wireless
 
-- [ ] Record exact Logitech headset model
-- [ ] Determine receiver/transport
+- [X] Record exact Logitech headset model — Logitech PRO X Wireless Gaming Headset
+- [X] Determine receiver/transport — USB HID receiver `046D:0ABA`, control interface `MI_03`, vendor collections `FF43:0202` and `FF00:0001`
 - [ ] Determine battery protocol
 - [ ] Add required generic protocol support
 - [ ] Add Logitech device profile

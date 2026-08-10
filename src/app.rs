@@ -1,7 +1,10 @@
 use std::io;
 
 #[cfg(debug_assertions)]
-use std::{env, thread, time::Duration};
+use std::{
+    env, thread,
+    time::{Duration, Instant},
+};
 
 use crate::{
     config::{
@@ -14,7 +17,7 @@ use crate::{
 };
 
 #[cfg(debug_assertions)]
-use crate::devices::BatteryPoll;
+use crate::{devices::BatteryPoll, transports::windows_hid::HidDevice};
 
 #[cfg(any(debug_assertions, test))]
 use crate::devices::BatteryProtocol;
@@ -37,6 +40,10 @@ pub(crate) fn run() -> io::Result<()> {
     #[cfg(debug_assertions)]
     {
         log_discovery(&discovered_hardware, &recognized_devices);
+
+        if logitech_passive_test_requested() {
+            run_logitech_passive_test(&discovered_hardware);
+        }
 
         if reconnect_test_requested() {
             run_reconnect_test(&mut device_sessions);
@@ -292,6 +299,138 @@ fn same_connection_details(left: &RecognizedDevice, right: &RecognizedDevice) ->
 }
 
 #[cfg(debug_assertions)]
+const LOGITECH_VENDOR_ID: u16 = 0x046D;
+
+#[cfg(debug_assertions)]
+const LOGITECH_PRO_X_PRODUCT_ID: u16 = 0x0ABA;
+
+#[cfg(debug_assertions)]
+const LOGITECH_CONTROL_INTERFACE: u32 = 3;
+
+#[cfg(debug_assertions)]
+const LOGITECH_PASSIVE_TEST_DURATION: Duration = Duration::from_secs(30);
+
+#[cfg(debug_assertions)]
+const LOGITECH_PASSIVE_READ_TIMEOUT: Duration = Duration::from_millis(50);
+
+#[cfg(debug_assertions)]
+fn logitech_passive_test_requested() -> bool {
+    env::var_os("BAREPULSE_LOGITECH_PASSIVE_TEST").is_some()
+}
+
+#[cfg(debug_assertions)]
+fn run_logitech_passive_test(hardware: &[discovery::DiscoveredHardware]) {
+    let candidates = hardware
+        .iter()
+        .filter(|device| {
+            device.vendor_id == Some(LOGITECH_VENDOR_ID)
+                && device.product_id == Some(LOGITECH_PRO_X_PRODUCT_ID)
+                && device.interface_number == Some(LOGITECH_CONTROL_INTERFACE)
+                && device
+                    .usage_page
+                    .is_some_and(|usage_page| usage_page >= 0xFF00)
+        })
+        .collect::<Vec<_>>();
+
+    eprintln!(
+        "BarePulse Logitech passive test: {} candidate vendor HID collection(s)",
+        candidates.len()
+    );
+
+    let mut probes = Vec::new();
+
+    for device in candidates {
+        match HidDevice::open_read_only(&device.device_path) {
+            Ok(probe) => {
+                let lengths = probe.report_lengths();
+
+                eprintln!(
+                    "BarePulse Logitech candidate: PID={:04X} interface={:?} usage={:04X}:{:04X} input={} output={} feature={} product={:?} key={}",
+                    device.product_id.unwrap_or_default(),
+                    device.interface_number,
+                    device.usage_page.unwrap_or_default(),
+                    device.usage.unwrap_or_default(),
+                    lengths.input,
+                    lengths.output,
+                    lengths.feature,
+                    device.product_string,
+                    device.hardware_key,
+                );
+
+                probes.push((device, probe, None::<Vec<u8>>, true));
+            }
+
+            Err(error) => {
+                eprintln!(
+                    "BarePulse Logitech candidate open failed: usage={:04X}:{:04X} error={error}",
+                    device.usage_page.unwrap_or_default(),
+                    device.usage.unwrap_or_default(),
+                );
+            }
+        }
+    }
+
+    if probes.is_empty() {
+        eprintln!("BarePulse Logitech passive test: no readable vendor HID collections");
+
+        return;
+    }
+
+    eprintln!(
+        "BarePulse Logitech passive test: listening for {} seconds; toggle the headset power OFF and ON while the receiver remains connected",
+        LOGITECH_PASSIVE_TEST_DURATION.as_secs()
+    );
+
+    let deadline = Instant::now() + LOGITECH_PASSIVE_TEST_DURATION;
+
+    while Instant::now() < deadline {
+        let mut any_active = false;
+
+        for (device, probe, last_report, active) in &mut probes {
+            if !*active {
+                continue;
+            }
+
+            any_active = true;
+
+            match probe.read_report(LOGITECH_PASSIVE_READ_TIMEOUT) {
+                Ok(Some(report)) => {
+                    if last_report.as_ref() == Some(&report) {
+                        continue;
+                    }
+
+                    eprintln!(
+                        "BarePulse Logitech passive report: usage={:04X}:{:04X} bytes={report:?}",
+                        device.usage_page.unwrap_or_default(),
+                        device.usage.unwrap_or_default(),
+                    );
+
+                    *last_report = Some(report);
+                }
+
+                Ok(None) => {}
+
+                Err(error) => {
+                    eprintln!(
+                        "BarePulse Logitech passive read failed: usage={:04X}:{:04X} error={error}",
+                        device.usage_page.unwrap_or_default(),
+                        device.usage.unwrap_or_default(),
+                    );
+
+                    *active = false;
+                }
+            }
+        }
+
+        if !any_active {
+            break;
+        }
+    }
+
+    eprintln!("BarePulse Logitech passive test: finished");
+}
+
+#[cfg(debug_assertions)]
 const RECONNECT_TEST_POLLS: usize = 30;
 
 #[cfg(debug_assertions)]
@@ -403,6 +542,27 @@ fn log_discovery(
                 .product_id
                 .map(|value| format!("{value:04X}"))
                 .unwrap_or_else(|| "unknown".to_string()),
+            device.interface_number,
+            device.usage_page,
+            device.usage,
+            device.product_string,
+            device.serial_number,
+            device.hardware_key,
+        );
+    }
+
+    for device in hardware.iter().filter(|device| {
+        device.vendor_id == Some(LOGITECH_VENDOR_ID)
+            && device.product_id == Some(LOGITECH_PRO_X_PRODUCT_ID)
+    }) {
+        eprintln!(
+            "  Logitech {:?}: VID={:04X} PID={} interface={:?} usage={:?}:{:?} product={:?} serial={:?} key={}",
+            device.transport,
+            device.vendor_id.unwrap_or_default(),
+            device
+                .product_id
+                .map(|value| { format!("{value:04X}") })
+                .unwrap_or_else(|| { "unknown".to_string() }),
             device.interface_number,
             device.usage_page,
             device.usage,

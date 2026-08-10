@@ -63,11 +63,16 @@ pub(crate) struct HidDevice {
 
 impl HidDevice {
     pub(crate) fn open(device_path: &str) -> io::Result<Self> {
-        let handle = open_handle(
-            device_path,
-            GENERIC_READ | GENERIC_WRITE,
-            FILE_FLAG_OVERLAPPED,
-        )?;
+        Self::open_with_access(device_path, GENERIC_READ | GENERIC_WRITE)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn open_read_only(device_path: &str) -> io::Result<Self> {
+        Self::open_with_access(device_path, GENERIC_READ)
+    }
+
+    fn open_with_access(device_path: &str, desired_access: u32) -> io::Result<Self> {
+        let handle = open_handle(device_path, desired_access, FILE_FLAG_OVERLAPPED)?;
 
         let capabilities = read_capabilities(handle.0)?;
 
