@@ -95,7 +95,7 @@
 - [X] Handles sleeping state
 - [X] Handles disconnect/reconnect
 - [X] Shows useful battery status in Windows tray
-- [ ] Runs with negligible idle CPU usage
+- [X] Runs with negligible idle CPU usage
 - [X] Requires no administrator privileges
 - [X] Works as a portable application
 
