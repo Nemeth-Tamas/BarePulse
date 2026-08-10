@@ -96,7 +96,7 @@
 - [X] Handles disconnect/reconnect
 - [X] Shows useful battery status in Windows tray
 - [ ] Runs with negligible idle CPU usage
-- [ ] Requires no administrator privileges
+- [X] Requires no administrator privileges
 - [X] Works as a portable application
 
 ## Milestone 5 — Native device events
@@ -137,7 +137,7 @@
 - [ ] Produce portable release package
 - [ ] Design installer
 - [ ] Install under `%LOCALAPPDATA%\BarePulse`
-- [ ] Avoid administrator requirement
+- [X] Avoid administrator requirement
 - [ ] Add optional Start Menu shortcut
 - [ ] Add optional Start with Windows
 - [ ] Use same executable for portable and installed modes where practical
