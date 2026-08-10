@@ -125,7 +125,7 @@
 - [X] Add SHA-256 profile verification
 - [X] Download profiles to temporary files
 - [X] Atomically replace verified profiles
-- [ ] Retain last-known-good profile after failed update
+- [X] Retain last-known-good profile after failed update
 - [ ] Define registry/profile update policy
 - [ ] Consider signed registry manifest later
 
