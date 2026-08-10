@@ -119,12 +119,12 @@
 - [X] Retrieve registry manifest from GitHub
 - [X] Match discovered hardware against registry
 - [X] Download only profiles needed by detected hardware
-- [ ] Cache profiles locally
-- [ ] Operate offline using cached profiles
+- [X] Cache profiles locally
+- [X] Operate offline using cached profiles
 - [X] Validate downloaded profile schema
-- [ ] Add SHA-256 profile verification
+- [X] Add SHA-256 profile verification
 - [X] Download profiles to temporary files
-- [ ] Atomically replace verified profiles
+- [X] Atomically replace verified profiles
 - [ ] Retain last-known-good profile after failed update
 - [ ] Define registry/profile update policy
 - [ ] Consider signed registry manifest later

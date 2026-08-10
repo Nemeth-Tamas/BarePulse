@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use crate::{
     discovery::{DiscoveredHardware, Transport as DiscoveryTransport},
+    platform,
     transports::windows_web,
 };
 
@@ -41,6 +42,7 @@ struct Manifest {
 struct ManifestProfile {
     id: String,
     path: String,
+    sha256: String,
     matches: Vec<ManifestMatch>,
 }
 
@@ -282,31 +284,57 @@ impl DeviceRegistry {
     fn load_profile(&self, manifest_profile: &ManifestProfile) -> io::Result<DeviceProfile> {
         let profile_path = self.directory.join(&manifest_profile.path);
 
-        match fs::read_to_string(&profile_path) {
-            Ok(contents) => {
-                let profile = parse_profile(&contents, manifest_profile).map_err(|error| {
+        match fs::read(&profile_path) {
+            Ok(bytes) => {
+                let profile = parse_profile_bytes(&bytes, manifest_profile).map_err(|error| {
                     io::Error::new(error.kind(), format!("{}: {error}", profile_path.display()))
                 })?;
 
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "BarePulse registry: loaded profile {} from {}",
-                    profile.id,
-                    profile_path.display()
-                );
+                match verify_profile_sha256(&bytes, manifest_profile) {
+                    Ok(()) => {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "BarePulse registry: loaded verified profile {} from {}",
+                            profile.id,
+                            profile_path.display()
+                        );
 
-                Ok(profile)
+                        Ok(profile)
+                    }
+
+                    Err(hash_error) => {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "BarePulse registry: cached profile {} needs refresh: {hash_error}",
+                            manifest_profile.id
+                        );
+
+                        match self.download_and_cache_profile(manifest_profile) {
+                            Ok(updated) => Ok(updated),
+
+                            Err(update_error) => {
+                                #[cfg(debug_assertions)]
+                                eprintln!(
+                                    "BarePulse registry: profile {} refresh failed: {}; using last-known-good local profile",
+                                    manifest_profile.id, update_error
+                                );
+
+                                Ok(profile)
+                            }
+                        }
+                    }
+                }
             }
 
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.download_profile_temporarily(manifest_profile)
+                self.download_and_cache_profile(manifest_profile)
             }
 
             Err(error) => Err(error),
         }
     }
 
-    fn download_profile_temporarily(
+    fn download_and_cache_profile(
         &self,
         manifest_profile: &ManifestProfile,
     ) -> io::Result<DeviceProfile> {
@@ -331,6 +359,8 @@ impl DeviceRegistry {
 
         let temporary_path = temporary_profile_path(&self.directory, manifest_profile)?;
 
+        let destination = self.directory.join(&manifest_profile.path);
+
         if let Some(parent) = temporary_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -338,40 +368,47 @@ impl DeviceRegistry {
         let result = (|| {
             fs::write(&temporary_path, contents.as_bytes())?;
 
-            let written_contents = fs::read_to_string(&temporary_path)?;
+            let downloaded_bytes = fs::read(&temporary_path)?;
 
-            let profile = parse_profile(&written_contents, manifest_profile).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("{}: {error}", temporary_path.display()),
-                )
-            })?;
+            verify_profile_sha256(&downloaded_bytes, manifest_profile)?;
+
+            let profile =
+                parse_profile_bytes(&downloaded_bytes, manifest_profile).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("{}: {error}", temporary_path.display()),
+                    )
+                })?;
+
+            platform::windows::replace_file_atomically(&temporary_path, &destination)?;
 
             #[cfg(debug_assertions)]
             eprintln!(
-                "BarePulse registry: downloaded and validated profile {} via temporary file {}",
+                "BarePulse registry: downloaded, SHA-256 verified, and cached profile {} at {}",
                 profile.id,
-                temporary_path.display()
+                destination.display()
             );
 
             Ok(profile)
         })();
 
-        let cleanup_result = fs::remove_file(&temporary_path);
+        if result.is_err() {
+            match fs::remove_file(&temporary_path) {
+                Ok(()) => {}
 
-        match (result, cleanup_result) {
-            (Ok(profile), Ok(())) => Ok(profile),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
 
-            (Ok(_), Err(error)) => Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "validated temporary profile could not be removed: {}: {error}",
-                    temporary_path.display()
-                ),
-            )),
-
-            (Err(error), _) => Err(error),
+                Err(error) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "BarePulse registry: failed to clean temporary profile {}: {error}",
+                        temporary_path.display()
+                    );
+                }
+            }
         }
+
+        result
     }
 
     fn load_from_directory(directory: &Path) -> io::Result<Self> {
@@ -520,6 +557,18 @@ fn validate_manifest(manifest: &Manifest) -> io::Result<()> {
             ));
         }
 
+        if profile.sha256.len() != 64
+            || !profile.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "device registry profile {} has invalid SHA-256 {}",
+                    profile.id, profile.sha256
+                ),
+            ));
+        }
+
         if profile.matches.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -550,6 +599,36 @@ fn validate_manifest(manifest: &Manifest) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn parse_profile_bytes(
+    bytes: &[u8],
+    manifest_profile: &ManifestProfile,
+) -> io::Result<DeviceProfile> {
+    let contents = std::str::from_utf8(bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("device profile is not valid UTF-8: {error}"),
+        )
+    })?;
+
+    parse_profile(contents, manifest_profile)
+}
+
+fn verify_profile_sha256(bytes: &[u8], manifest_profile: &ManifestProfile) -> io::Result<()> {
+    let actual = platform::windows::sha256_hex(bytes)?;
+
+    if actual.eq_ignore_ascii_case(&manifest_profile.sha256) {
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "profile {} SHA-256 mismatch: expected {}, got {}",
+            manifest_profile.id, manifest_profile.sha256, actual
+        ),
+    ))
 }
 
 fn parse_profile(contents: &str, manifest_profile: &ManifestProfile) -> io::Result<DeviceProfile> {
@@ -667,6 +746,7 @@ schema = 1
 [[profiles]]
 id = "steelseries.aerox9"
 path = "steelseries.aerox9.toml"
+sha256 = "0abbc78f18c981cc4d2691a9550c660718052d960583e1d00177603adc256486"
 
 [[profiles.matches]]
 transport = "usb-hid"
@@ -864,5 +944,17 @@ battery_command = 0x92
             path.file_name().and_then(|name| name.to_str()),
             Some(expected_suffix.as_str())
         );
+    }
+
+    #[test]
+    fn registry_rejects_invalid_profile_hash() {
+        let invalid = VALID_MANIFEST.replace(
+            "0abbc78f18c981cc4d2691a9550c660718052d960583e1d00177603adc256486",
+            "not-a-sha256",
+        );
+
+        let error = parse_manifest(&invalid).expect_err("invalid SHA-256 should fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }

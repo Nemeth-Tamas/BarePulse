@@ -10,6 +10,8 @@ const REGISTRY_SCHEMA: u32 = 1;
 
 const AEROX_PROFILE_ID: &str = "steelseries.aerox9";
 const AEROX_PROFILE_FILE: &str = "steelseries.aerox9.toml";
+const AEROX_PROFILE_SHA256: &str =
+    "0abbc78f18c981cc4d2691a9550c660718052d960583e1d00177603adc256486";
 
 const STEELSERIES_VENDOR_ID: u16 = 0x1038;
 const AEROX_WIRELESS_PRODUCT_ID: u16 = 0x1858;
@@ -34,6 +36,7 @@ struct Manifest {
 struct ManifestProfile {
     id: String,
     path: String,
+    sha256: String,
     matches: Vec<ManifestMatch>,
 }
 
@@ -116,6 +119,8 @@ fn manifest_is_valid_and_contains_aerox_9() {
     for profile in &manifest.profiles {
         assert!(!profile.id.trim().is_empty());
         assert!(!profile.path.trim().is_empty());
+        assert_eq!(profile.sha256.len(), 64);
+        assert!(profile.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert!(!profile.matches.is_empty());
 
         assert!(
@@ -144,6 +149,7 @@ fn manifest_is_valid_and_contains_aerox_9() {
         .expect("Aerox 9 registry entry should exist");
 
     assert_eq!(aerox.path, AEROX_PROFILE_FILE);
+    assert_eq!(aerox.sha256, AEROX_PROFILE_SHA256);
 
     assert!(aerox.matches.iter().any(|device_match| {
         device_match.transport == Transport::UsbHid

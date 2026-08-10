@@ -3,6 +3,7 @@ schema = 1
 [[profiles]]
 id = "steelseries.aerox9"
 path = "steelseries.aerox9.toml"
+sha256 = "0abbc78f18c981cc4d2691a9550c660718052d960583e1d00177603adc256486"
 
 [[profiles.matches]]
 transport = "usb-hid"
