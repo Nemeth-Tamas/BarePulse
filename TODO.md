@@ -97,7 +97,7 @@
 - [X] Shows useful battery status in Windows tray
 - [ ] Runs with negligible idle CPU usage
 - [ ] Requires no administrator privileges
-- [ ] Works as a portable application
+- [X] Works as a portable application
 
 ## Milestone 5 — Native device events
 
@@ -131,9 +131,9 @@
 
 ## Milestone 7 — Portable and installed packaging
 
-- [ ] Finalize portable directory structure
-- [ ] Keep config beside executable
-- [ ] Keep downloaded profiles beside executable
+- [X] Finalize portable directory structure
+- [X] Keep config beside executable
+- [X] Keep downloaded profiles beside executable
 - [ ] Produce portable release package
 - [ ] Design installer
 - [ ] Install under `%LOCALAPPDATA%\BarePulse`
