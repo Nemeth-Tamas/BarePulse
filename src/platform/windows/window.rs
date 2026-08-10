@@ -30,6 +30,12 @@ const DEVICE_CHANGE_TIMER_ID: usize = 2;
 
 const DEVICE_CHANGE_DEBOUNCE_MILLISECONDS: u32 = 150;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefreshReason {
+    StatusOnly,
+    HardwareArrival,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct LowBatteryNotificationState {
     last_threshold: Option<u8>,
@@ -85,8 +91,9 @@ impl LowBatteryNotificationState {
 
 struct WindowState {
     statuses: Vec<DeviceStatus>,
-    refresh: Box<dyn FnMut() -> Vec<DeviceStatus>>,
+    refresh: Box<dyn FnMut(RefreshReason) -> io::Result<Vec<DeviceStatus>>>,
     low_battery_notifications: Vec<LowBatteryNotificationState>,
+    hardware_arrival_pending: bool,
 }
 
 thread_local! {
@@ -99,7 +106,7 @@ pub(crate) fn run<F>(
     refresh: F,
 ) -> io::Result<()>
 where
-    F: FnMut() -> Vec<DeviceStatus> + 'static,
+    F: FnMut(RefreshReason) -> io::Result<Vec<DeviceStatus>> + 'static,
 {
     WINDOW_STATE.with(|state| {
         let low_battery_notifications =
@@ -109,6 +116,7 @@ where
             statuses: initial_statuses,
             refresh: Box::new(refresh),
             low_battery_notifications,
+            hardware_arrival_pending: false,
         });
     });
 
@@ -222,6 +230,34 @@ fn status_snapshot() -> Vec<DeviceStatus> {
     })
 }
 
+fn mark_hardware_arrival_pending() {
+    WINDOW_STATE.with(|state| {
+        if let Some(state) = state.borrow_mut().as_mut() {
+            state.hardware_arrival_pending = true;
+        }
+    });
+}
+
+fn take_device_change_refresh_reason() -> RefreshReason {
+    WINDOW_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+
+        let Some(state) = state.as_mut() else {
+            return RefreshReason::StatusOnly;
+        };
+
+        let reason = if state.hardware_arrival_pending {
+            RefreshReason::HardwareArrival
+        } else {
+            RefreshReason::StatusOnly
+        };
+
+        state.hardware_arrival_pending = false;
+
+        reason
+    })
+}
+
 fn process_current_low_battery(window: HWND) -> io::Result<()> {
     WINDOW_STATE.with(|state| {
         let mut state = state.borrow_mut();
@@ -254,7 +290,7 @@ fn process_low_battery_notifications(
     Ok(())
 }
 
-fn refresh_status(window: HWND) -> io::Result<()> {
+fn refresh_status(window: HWND, reason: RefreshReason) -> io::Result<()> {
     WINDOW_STATE.with(|state| {
         let mut state = state.borrow_mut();
 
@@ -262,7 +298,7 @@ fn refresh_status(window: HWND) -> io::Result<()> {
             .as_mut()
             .ok_or_else(|| io::Error::other("BarePulse window state is unavailable"))?;
 
-        let refreshed = (state.refresh)();
+        let refreshed = (state.refresh)(reason)?;
 
         process_low_battery_notifications(
             window,
@@ -364,6 +400,10 @@ unsafe extern "system" fn window_proc(
                 #[cfg(debug_assertions)]
                 eprintln!("BarePulse device event: HID {}", change.label());
 
+                if change == device_events::Change::Arrival {
+                    mark_hardware_arrival_pending();
+                }
+
                 // SAFETY:
                 // Reusing the same timer ID restarts the short debounce window,
                 // coalescing bursts of HID-interface notifications into one refresh.
@@ -397,10 +437,12 @@ unsafe extern "system" fn window_proc(
                 KillTimer(window, DEVICE_CHANGE_TIMER_ID);
             }
 
-            #[cfg(debug_assertions)]
-            eprintln!("BarePulse device event: refreshing device status");
+            let reason = take_device_change_refresh_reason();
 
-            if let Err(error) = refresh_status(window) {
+            #[cfg(debug_assertions)]
+            eprintln!("BarePulse device event: refreshing device status ({reason:?})");
+
+            if let Err(error) = refresh_status(window, reason) {
                 #[cfg(debug_assertions)]
                 eprintln!("BarePulse device-event refresh failed: {error}");
             }
@@ -409,7 +451,7 @@ unsafe extern "system" fn window_proc(
         }
 
         WM_TIMER if w_param == STATUS_TIMER_ID => {
-            if let Err(error) = refresh_status(window) {
+            if let Err(error) = refresh_status(window, RefreshReason::StatusOnly) {
                 #[cfg(debug_assertions)]
                 eprintln!("BarePulse tray refresh failed: {error}");
             }
@@ -422,7 +464,7 @@ unsafe extern "system" fn window_proc(
 
             match tray::handle_callback(window, l_param, &statuses) {
                 Ok(tray::Action::Refresh) => {
-                    if let Err(error) = refresh_status(window) {
+                    if let Err(error) = refresh_status(window, RefreshReason::StatusOnly) {
                         #[cfg(debug_assertions)]
                         eprintln!("BarePulse manual refresh failed: {error}");
                     }
