@@ -126,8 +126,8 @@
 - [X] Download profiles to temporary files
 - [X] Atomically replace verified profiles
 - [X] Retain last-known-good profile after failed update
-- [ ] Define registry/profile update policy
-- [ ] Consider signed registry manifest later
+- [X] Define registry/profile update policy
+- [X] Consider signed registry manifest later — deferred to future registry signing work
 
 ## Milestone 7 — Portable and installed packaging
 

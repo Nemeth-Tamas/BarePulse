@@ -3,6 +3,7 @@ use std::{
     env, fs, io,
     path::{Component, Path, PathBuf},
     process,
+    time::{Duration, SystemTime},
 };
 
 use serde::Deserialize;
@@ -17,6 +18,9 @@ use super::{BatteryProtocol, ConnectionMode, RecognizedDevice};
 
 const REGISTRY_SCHEMA: u32 = 1;
 const MANIFEST_FILE_NAME: &str = "manifest.toml";
+const MANIFEST_CHECK_FILE_NAME: &str = ".manifest-check";
+
+const MANIFEST_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 const REGISTRY_GITHUB_HOST: &str = "raw.githubusercontent.com";
 const REGISTRY_GITHUB_MANIFEST_PATH: &str = "/Nemeth-Tamas/BarePulse/main/devices/manifest.toml";
@@ -176,7 +180,7 @@ impl DeviceRegistry {
             Ok(registry) => registry,
 
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                Self::load_debug_fallback(error)?
+                Self::load_debug_fallback(&portable_directory, error)?
             }
 
             Err(error) => return Err(error),
@@ -195,42 +199,135 @@ impl DeviceRegistry {
             return;
         }
 
-        let contents = match windows_web::get_https_text(
+        if !self.manifest_refresh_due() {
+            #[cfg(debug_assertions)]
+            eprintln!("BarePulse registry: manifest refresh not due; using cached manifest");
+
+            return;
+        }
+
+        let refresh_result = self.fetch_and_cache_manifest_from_github();
+
+        self.record_manifest_check();
+
+        match refresh_result {
+            Ok(()) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "BarePulse registry: fetched, validated, and cached manifest from GitHub"
+                );
+            }
+
+            Err(_error) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "BarePulse registry: manifest refresh failed: {_error}; using cached manifest"
+                );
+            }
+        }
+    }
+
+    fn manifest_refresh_due(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if env::var_os("BAREPULSE_REGISTRY_FORCE_REFRESH").is_some() {
+            eprintln!("BarePulse registry: manifest refresh forced by test");
+
+            return true;
+        }
+
+        let check_path = self.directory.join(MANIFEST_CHECK_FILE_NAME);
+
+        let checked_at = match fs::metadata(&check_path).and_then(|metadata| metadata.modified()) {
+            Ok(checked_at) => checked_at,
+
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return true;
+            }
+
+            Err(_error) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "BarePulse registry: could not read manifest check timestamp: {_error}; refreshing"
+                );
+
+                return true;
+            }
+        };
+
+        refresh_interval_elapsed(checked_at, SystemTime::now())
+    }
+
+    fn fetch_and_cache_manifest_from_github(&mut self) -> io::Result<()> {
+        let contents = windows_web::get_https_text(
             REGISTRY_GITHUB_HOST,
             REGISTRY_GITHUB_MANIFEST_PATH,
             MAXIMUM_MANIFEST_BYTES,
-        ) {
-            Ok(contents) => contents,
+        )
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("GitHub manifest unavailable: {error}"),
+            )
+        })?;
 
-            Err(error) => {
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "BarePulse registry: GitHub manifest unavailable: \
-                 {error}; using local manifest"
-                );
+        parse_manifest(&contents).map_err(|error| {
+            io::Error::new(error.kind(), format!("GitHub manifest is invalid: {error}"))
+        })?;
 
-                return;
+        let temporary_path = temporary_manifest_path(&self.directory);
+
+        let destination = self.directory.join(MANIFEST_FILE_NAME);
+
+        fs::create_dir_all(&self.directory)?;
+
+        let result: io::Result<()> = (|| {
+            fs::write(&temporary_path, contents.as_bytes())?;
+
+            let written_contents = fs::read_to_string(&temporary_path)?;
+
+            let manifest = parse_manifest(&written_contents).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", temporary_path.display()),
+                )
+            })?;
+
+            platform::windows::replace_file_atomically(&temporary_path, &destination)?;
+
+            self.manifest = manifest;
+
+            Ok(())
+        })();
+
+        if result.is_err() {
+            match fs::remove_file(&temporary_path) {
+                Ok(()) => {}
+
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+
+                Err(_error) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "BarePulse registry: failed to clean temporary manifest {}: {_error}",
+                        temporary_path.display()
+                    );
+                }
             }
-        };
+        }
 
-        let manifest = match parse_manifest(&contents) {
-            Ok(manifest) => manifest,
+        result
+    }
 
-            Err(error) => {
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "BarePulse registry: GitHub manifest is invalid: \
-                 {error}; using local manifest"
-                );
+    fn record_manifest_check(&self) {
+        let check_path = self.directory.join(MANIFEST_CHECK_FILE_NAME);
 
-                return;
-            }
-        };
-
-        self.manifest = manifest;
-
-        #[cfg(debug_assertions)]
-        eprintln!("BarePulse registry: fetched and validated manifest from GitHub");
+        if let Err(_error) = fs::write(&check_path, b"") {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "BarePulse registry: could not record manifest check time at {}: {_error}",
+                check_path.display()
+            );
+        }
     }
 
     #[cfg(test)]
@@ -433,15 +530,82 @@ impl DeviceRegistry {
     }
 
     #[cfg(debug_assertions)]
-    fn load_debug_fallback(_portable_error: io::Error) -> io::Result<Self> {
+    fn load_debug_fallback(
+        portable_directory: &Path,
+        _portable_error: io::Error,
+    ) -> io::Result<Self> {
         let source_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("devices");
 
-        Self::load_from_directory(&source_directory)
+        let source_manifest_path = source_directory.join(MANIFEST_FILE_NAME);
+
+        let manifest_contents = fs::read_to_string(&source_manifest_path)?;
+
+        let manifest = parse_manifest(&manifest_contents).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("{}: {error}", source_manifest_path.display()),
+            )
+        })?;
+
+        fs::create_dir_all(portable_directory)?;
+
+        for profile in &manifest.profiles {
+            let source = source_directory.join(&profile.path);
+
+            let destination = portable_directory.join(&profile.path);
+
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            fs::copy(&source, &destination).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to seed debug profile {} from {} to {}: {error}",
+                        profile.id,
+                        source.display(),
+                        destination.display()
+                    ),
+                )
+            })?;
+        }
+
+        fs::write(
+            portable_directory.join(MANIFEST_FILE_NAME),
+            manifest_contents.as_bytes(),
+        )?;
+
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "BarePulse registry: seeded debug device cache from {}",
+            source_directory.display()
+        );
+
+        Self::load_from_directory(portable_directory)
     }
 
     #[cfg(not(debug_assertions))]
-    fn load_debug_fallback(portable_error: io::Error) -> io::Result<Self> {
+    fn load_debug_fallback(
+        _portable_directory: &Path,
+        portable_error: io::Error,
+    ) -> io::Result<Self> {
         Err(portable_error)
+    }
+}
+
+fn temporary_manifest_path(directory: &Path) -> PathBuf {
+    directory.join(format!(
+        "{MANIFEST_FILE_NAME}.{}.download.tmp",
+        process::id()
+    ))
+}
+
+fn refresh_interval_elapsed(last_check: SystemTime, now: SystemTime) -> bool {
+    match now.duration_since(last_check) {
+        Ok(elapsed) => elapsed >= MANIFEST_REFRESH_INTERVAL,
+
+        Err(_) => true,
     }
 }
 
@@ -956,5 +1120,44 @@ battery_command = 0x92
         let error = parse_manifest(&invalid).expect_err("invalid SHA-256 should fail");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn temporary_manifest_path_is_process_scoped() {
+        let path = temporary_manifest_path(Path::new("devices"));
+
+        let expected = format!("manifest.toml.{}.download.tmp", process::id());
+
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn recent_manifest_check_does_not_refresh() {
+        let now = SystemTime::UNIX_EPOCH + MANIFEST_REFRESH_INTERVAL + Duration::from_secs(60);
+
+        let last_check = now - Duration::from_secs(60);
+
+        assert!(!refresh_interval_elapsed(last_check, now));
+    }
+
+    #[test]
+    fn expired_manifest_check_refreshes() {
+        let now = SystemTime::UNIX_EPOCH + MANIFEST_REFRESH_INTERVAL + Duration::from_secs(60);
+
+        let last_check = now - MANIFEST_REFRESH_INTERVAL;
+
+        assert!(refresh_interval_elapsed(last_check, now));
+    }
+
+    #[test]
+    fn future_manifest_check_refreshes_safely() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(60);
+
+        let future = now + Duration::from_secs(60);
+
+        assert!(refresh_interval_elapsed(future, now));
     }
 }
