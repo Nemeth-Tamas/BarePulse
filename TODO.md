@@ -116,7 +116,7 @@
 - [X] Create `devices/manifest.toml`
 - [X] Add SteelSeries Aerox 9 registry entry
 - [X] Add SteelSeries Aerox 9 profile
-- [ ] Retrieve registry manifest from GitHub
+- [X] Retrieve registry manifest from GitHub
 - [X] Match discovered hardware against registry
 - [ ] Download only profiles needed by detected hardware
 - [ ] Cache profiles locally

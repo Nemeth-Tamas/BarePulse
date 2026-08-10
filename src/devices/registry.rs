@@ -6,12 +6,20 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::discovery::{DiscoveredHardware, Transport as DiscoveryTransport};
+use crate::{
+    discovery::{DiscoveredHardware, Transport as DiscoveryTransport},
+    transports::windows_web,
+};
 
 use super::{BatteryProtocol, ConnectionMode, RecognizedDevice};
 
 const REGISTRY_SCHEMA: u32 = 1;
 const MANIFEST_FILE_NAME: &str = "manifest.toml";
+
+const REGISTRY_GITHUB_HOST: &str = "raw.githubusercontent.com";
+const REGISTRY_GITHUB_MANIFEST_PATH: &str = "/Nemeth-Tamas/BarePulse/main/devices/manifest.toml";
+
+const MAXIMUM_MANIFEST_BYTES: usize = 128 * 1024;
 
 pub(crate) struct DeviceRegistry {
     manifest: Manifest,
@@ -159,15 +167,65 @@ impl DeviceRegistry {
 
         let portable_directory = executable_directory.join("devices");
 
-        match Self::load_from_directory(&portable_directory) {
-            Ok(registry) => Ok(registry),
+        let mut registry = match Self::load_from_directory(&portable_directory) {
+            Ok(registry) => registry,
 
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                Self::load_debug_fallback(error)
+                Self::load_debug_fallback(error)?
             }
 
-            Err(error) => Err(error),
+            Err(error) => return Err(error),
+        };
+
+        registry.refresh_manifest_from_github();
+
+        Ok(registry)
+    }
+
+    fn refresh_manifest_from_github(&mut self) {
+        #[cfg(debug_assertions)]
+        if env::var_os("BAREPULSE_REGISTRY_OFFLINE_TEST").is_some() {
+            eprintln!("BarePulse registry: remote manifest fetch skipped by offline test");
+
+            return;
         }
+
+        let contents = match windows_web::get_https_text(
+            REGISTRY_GITHUB_HOST,
+            REGISTRY_GITHUB_MANIFEST_PATH,
+            MAXIMUM_MANIFEST_BYTES,
+        ) {
+            Ok(contents) => contents,
+
+            Err(error) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "BarePulse registry: GitHub manifest unavailable: \
+                 {error}; using local manifest"
+                );
+
+                return;
+            }
+        };
+
+        let manifest = match parse_manifest(&contents) {
+            Ok(manifest) => manifest,
+
+            Err(error) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "BarePulse registry: GitHub manifest is invalid: \
+                 {error}; using local manifest"
+                );
+
+                return;
+            }
+        };
+
+        self.manifest = manifest;
+
+        #[cfg(debug_assertions)]
+        eprintln!("BarePulse registry: fetched and validated manifest from GitHub");
     }
 
     #[cfg(test)]
