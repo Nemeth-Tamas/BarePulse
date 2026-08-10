@@ -362,11 +362,15 @@ fn run_logitech_hidpp_test(hardware: &[discovery::DiscoveredHardware]) {
     match logitech_hidpp::probe_battery(&device) {
         Ok(probe) => {
             eprintln!(
-                "BarePulse Logitech HID++ battery: feature={:?} index=0x{:02X} level={}% charging={} raw_status=0x{:02X}",
+                "BarePulse Logitech HID++ battery: feature={:?} index=0x{:02X} level={}% charging={} voltage={} raw_status=0x{:02X}",
                 probe.feature,
                 probe.feature_index,
                 probe.reading.level,
                 probe.reading.charging,
+                probe
+                    .voltage_mv
+                    .map(|voltage| { format!("{voltage}mV") })
+                    .unwrap_or_else(|| { "n/a".to_string() }),
                 probe.raw_status,
             );
         }

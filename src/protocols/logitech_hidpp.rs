@@ -22,11 +22,13 @@ const ROOT_GET_FEATURE: u8 = 0x00;
 
 const FEATURE_BATTERY_LEVEL_STATUS: u16 = 0x1000;
 const FEATURE_UNIFIED_BATTERY: u16 = 0x1004;
+const FEATURE_ADC_MEASUREMENT: u16 = 0x1F20;
 
 const UNIFIED_GET_CAPABILITIES: u8 = 0x00;
 const UNIFIED_GET_STATUS: u8 = 0x10;
 
 const BATTERY_LEVEL_GET_STATUS: u8 = 0x00;
+const ADC_GET_MEASUREMENT: u8 = 0x00;
 
 const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -36,6 +38,7 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BatteryFeature {
+    AdcMeasurement,
     Unified,
     BatteryLevelStatus,
 }
@@ -45,11 +48,16 @@ pub(crate) struct BatteryProbe {
     pub(crate) feature: BatteryFeature,
     pub(crate) feature_index: u8,
     pub(crate) reading: BatteryReading,
+    pub(crate) voltage_mv: Option<u16>,
     pub(crate) raw_status: u8,
 }
 
 pub(crate) fn probe_battery(device: &HidDevice) -> io::Result<BatteryProbe> {
     require_long_reports(device)?;
+
+    if let Some(feature_index) = get_feature_index(device, FEATURE_ADC_MEASUREMENT)? {
+        return probe_adc_measurement(device, feature_index);
+    }
 
     if let Some(feature_index) = get_feature_index(device, FEATURE_UNIFIED_BATTERY)? {
         return probe_unified_battery(device, feature_index);
@@ -61,7 +69,7 @@ pub(crate) fn probe_battery(device: &HidDevice) -> io::Result<BatteryProbe> {
 
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "Logitech device exposes neither HID++ battery feature 0x1004 nor 0x1000",
+        "Logitech device exposes none of HID++ battery features 0x1F20, 0x1004, or 0x1000",
     ))
 }
 
@@ -98,6 +106,97 @@ fn get_feature_index(device: &HidDevice, feature: u16) -> io::Result<Option<u8>>
     }
 }
 
+fn probe_adc_measurement(device: &HidDevice, feature_index: u8) -> io::Result<BatteryProbe> {
+    let response = send_fap_command(device, feature_index, ADC_GET_MEASUREMENT, &[])?;
+
+    let (reading, voltage_mv, flags) = decode_adc_measurement(&response[4..])?;
+
+    Ok(BatteryProbe {
+        feature: BatteryFeature::AdcMeasurement,
+        feature_index,
+        reading,
+        voltage_mv: Some(voltage_mv),
+        raw_status: flags,
+    })
+}
+
+fn decode_adc_measurement(params: &[u8]) -> io::Result<(BatteryReading, u16, u8)> {
+    if params.len() < 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HID++ ADC measurement response is too short",
+        ));
+    }
+
+    let voltage_mv = u16::from_be_bytes([params[0], params[1]]);
+
+    let flags = params[2];
+
+    if flags & 0x01 == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "HID++ ADC measurement is not valid: voltage={voltage_mv}mV flags=0x{flags:02X}"
+            ),
+        ));
+    }
+
+    let level = estimate_adc_percentage(voltage_mv);
+
+    let charging = flags & 0x02 != 0;
+
+    Ok((BatteryReading { level, charging }, voltage_mv, flags))
+}
+
+fn estimate_adc_percentage(voltage_mv: u16) -> u8 {
+    const POINTS: &[(u16, u8)] = &[
+        (4186, 100),
+        (4067, 90),
+        (3989, 80),
+        (3922, 70),
+        (3859, 60),
+        (3811, 50),
+        (3778, 40),
+        (3751, 30),
+        (3717, 20),
+        (3671, 10),
+        (3646, 5),
+        (3579, 2),
+        (3500, 0),
+    ];
+
+    if voltage_mv >= POINTS[0].0 {
+        return POINTS[0].1;
+    }
+
+    if voltage_mv <= POINTS[POINTS.len() - 1].0 {
+        return POINTS[POINTS.len() - 1].1;
+    }
+
+    for points in POINTS.windows(2) {
+        let (high_mv, high_percent) = points[0];
+
+        let (low_mv, low_percent) = points[1];
+
+        if voltage_mv < low_mv || voltage_mv > high_mv {
+            continue;
+        }
+
+        let voltage_span = u32::from(high_mv - low_mv);
+
+        let voltage_offset = u32::from(voltage_mv - low_mv);
+
+        let percentage_span = u32::from(high_percent - low_percent);
+
+        let interpolated = u32::from(low_percent)
+            + (percentage_span * voltage_offset + voltage_span / 2) / voltage_span;
+
+        return interpolated as u8;
+    }
+
+    0
+}
+
 fn probe_unified_battery(device: &HidDevice, feature_index: u8) -> io::Result<BatteryProbe> {
     let capabilities = send_fap_command(device, feature_index, UNIFIED_GET_CAPABILITIES, &[])?;
 
@@ -124,6 +223,7 @@ fn probe_unified_battery(device: &HidDevice, feature_index: u8) -> io::Result<Ba
         feature: BatteryFeature::Unified,
         feature_index,
         reading,
+        voltage_mv: None,
         raw_status: response[6],
     })
 }
@@ -137,6 +237,7 @@ fn probe_battery_level_status(device: &HidDevice, feature_index: u8) -> io::Resu
         feature: BatteryFeature::BatteryLevelStatus,
         feature_index,
         reading,
+        voltage_mv: None,
         raw_status: response[6],
     })
 }
@@ -273,6 +374,48 @@ fn send_fap_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adc_measurement_decodes_known_pro_x_capture() {
+        let (reading, voltage_mv, flags) =
+            decode_adc_measurement(&[0x0F, 0x78, 0x01]).expect("valid PRO X ADC measurement");
+
+        assert_eq!(voltage_mv, 3960);
+        assert_eq!(flags, 0x01);
+
+        assert_eq!(
+            reading,
+            BatteryReading {
+                level: 76,
+                charging: false,
+            }
+        );
+    }
+
+    #[test]
+    fn adc_measurement_decodes_charging() {
+        let (reading, voltage_mv, flags) =
+            decode_adc_measurement(&[0x0F, 0x78, 0x03]).expect("valid charging ADC measurement");
+
+        assert_eq!(voltage_mv, 3960);
+        assert_eq!(flags, 0x03);
+
+        assert_eq!(
+            reading,
+            BatteryReading {
+                level: 76,
+                charging: true,
+            }
+        );
+    }
+
+    #[test]
+    fn adc_measurement_rejects_invalid_sample() {
+        let error =
+            decode_adc_measurement(&[0x0F, 0x78, 0x00]).expect_err("invalid ADC sample must fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    }
 
     #[test]
     fn unified_status_decodes_discharging() {
