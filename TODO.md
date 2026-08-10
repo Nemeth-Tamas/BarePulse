@@ -104,10 +104,10 @@
 - [X] Register for relevant Windows device notifications
 - [X] Detect hardware arrival
 - [X] Detect hardware removal
-- [ ] Perform targeted rediscovery on arrival
+- [X] Perform targeted rediscovery on arrival
 - [X] Perform immediate refresh after reconnect
-- [ ] Avoid full periodic hardware rescans
-- [ ] Update persistent device configuration when new hardware appears
+- [X] Avoid full periodic hardware rescans
+- [X] Update persistent device configuration when new hardware appears
 
 ## Milestone 6 — Device profile registry
 
