@@ -44,6 +44,15 @@ impl DeviceSession {
         self.hid_device.report_lengths()
     }
 
+    pub(crate) fn rebind(&mut self, device: RecognizedDevice) -> io::Result<()> {
+        let hid_device = HidDevice::open(&device.hardware.device_path)?;
+
+        self.device = device;
+        self.hid_device = hid_device;
+
+        Ok(())
+    }
+
     pub(crate) fn poll_status(&mut self) -> DeviceStatus {
         let connection = match self.query_battery() {
             Ok(BatteryPoll::Reading(reading)) => {

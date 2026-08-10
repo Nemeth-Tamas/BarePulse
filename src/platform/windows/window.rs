@@ -30,10 +30,19 @@ const DEVICE_CHANGE_TIMER_ID: usize = 2;
 
 const DEVICE_CHANGE_DEBOUNCE_MILLISECONDS: u32 = 150;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RefreshReason {
     StatusOnly,
-    HardwareArrival,
+    HardwareArrival(Vec<String>),
+}
+
+impl RefreshReason {
+    const fn label(&self) -> &'static str {
+        match self {
+            Self::StatusOnly => "StatusOnly",
+            Self::HardwareArrival(_) => "HardwareArrival",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -94,6 +103,7 @@ struct WindowState {
     refresh: Box<dyn FnMut(RefreshReason) -> io::Result<Vec<DeviceStatus>>>,
     low_battery_notifications: Vec<LowBatteryNotificationState>,
     hardware_arrival_pending: bool,
+    pending_arrival_paths: Vec<String>,
 }
 
 thread_local! {
@@ -117,6 +127,7 @@ where
             refresh: Box::new(refresh),
             low_battery_notifications,
             hardware_arrival_pending: false,
+            pending_arrival_paths: Vec::new(),
         });
     });
 
@@ -230,10 +241,23 @@ fn status_snapshot() -> Vec<DeviceStatus> {
     })
 }
 
-fn mark_hardware_arrival_pending() {
+fn mark_hardware_arrival_pending(device_path: Option<String>) {
     WINDOW_STATE.with(|state| {
-        if let Some(state) = state.borrow_mut().as_mut() {
-            state.hardware_arrival_pending = true;
+        let mut state = state.borrow_mut();
+
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+
+        state.hardware_arrival_pending = true;
+
+        if let Some(device_path) = device_path
+            && !state
+                .pending_arrival_paths
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&device_path))
+        {
+            state.pending_arrival_paths.push(device_path);
         }
     });
 }
@@ -246,15 +270,13 @@ fn take_device_change_refresh_reason() -> RefreshReason {
             return RefreshReason::StatusOnly;
         };
 
-        let reason = if state.hardware_arrival_pending {
-            RefreshReason::HardwareArrival
-        } else {
-            RefreshReason::StatusOnly
-        };
+        if !state.hardware_arrival_pending {
+            return RefreshReason::StatusOnly;
+        }
 
         state.hardware_arrival_pending = false;
 
-        reason
+        RefreshReason::HardwareArrival(std::mem::take(&mut state.pending_arrival_paths))
     })
 }
 
@@ -401,7 +423,20 @@ unsafe extern "system" fn window_proc(
                 eprintln!("BarePulse device event: HID {}", change.label());
 
                 if change == device_events::Change::Arrival {
-                    mark_hardware_arrival_pending();
+                    let device_path = device_events::device_path(l_param);
+
+                    #[cfg(debug_assertions)]
+                    match device_path.as_deref() {
+                        Some(path) => {
+                            eprintln!("BarePulse device event: arrival path={path}");
+                        }
+
+                        None => {
+                            eprintln!("BarePulse device event: arrival path unavailable");
+                        }
+                    }
+
+                    mark_hardware_arrival_pending(device_path);
                 }
 
                 // SAFETY:
@@ -440,7 +475,10 @@ unsafe extern "system" fn window_proc(
             let reason = take_device_change_refresh_reason();
 
             #[cfg(debug_assertions)]
-            eprintln!("BarePulse device event: refreshing device status ({reason:?})");
+            eprintln!(
+                "BarePulse device event: refreshing device status ({})",
+                reason.label()
+            );
 
             if let Err(error) = refresh_status(window, reason) {
                 #[cfg(debug_assertions)]

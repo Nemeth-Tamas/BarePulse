@@ -12,9 +12,10 @@ use windows_sys::{
         Devices::{
             DeviceAndDriverInstallation::{
                 DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, HDEVINFO, SP_DEVICE_INTERFACE_DATA,
-                SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA, SetupDiDestroyDeviceInfoList,
-                SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW,
-                SetupDiGetDeviceInterfaceDetailW,
+                SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA, SetupDiCreateDeviceInfoList,
+                SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
+                SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceInterfaceDetailW,
+                SetupDiOpenDeviceInterfaceW,
             },
             HumanInterfaceDevice::{
                 HIDD_ATTRIBUTES, HIDP_CAPS, HidD_FreePreparsedData, HidD_GetAttributes,
@@ -249,6 +250,49 @@ pub(crate) fn enumerate() -> io::Result<Vec<DiscoveredHardware>> {
     }
 
     Ok(devices)
+}
+
+pub(crate) fn inspect_path(device_path: &str) -> io::Result<Option<DiscoveredHardware>> {
+    // SAFETY:
+    // A null class GUID creates an unrestricted empty local device
+    // information set. No parent window is required.
+    let raw_device_info_set = unsafe { SetupDiCreateDeviceInfoList(null(), null_mut()) };
+
+    if raw_device_info_set == INVALID_HANDLE_VALUE as isize {
+        return Err(io::Error::last_os_error());
+    }
+
+    let device_info_set = DeviceInfoSet(raw_device_info_set);
+
+    // SAFETY:
+    // SP_DEVICE_INTERFACE_DATA is populated by SetupAPI and requires its
+    // cbSize member to be initialized before the call.
+    let mut interface_data: SP_DEVICE_INTERFACE_DATA = unsafe { zeroed() };
+
+    interface_data.cbSize = size_of::<SP_DEVICE_INTERFACE_DATA>() as u32;
+
+    let device_path_wide = device_path
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+
+    // SAFETY:
+    // device_info_set is a valid empty information set,
+    // device_path_wide is null-terminated, and interface_data points to
+    // writable caller-owned storage.
+    if unsafe {
+        SetupDiOpenDeviceInterfaceW(
+            device_info_set.0,
+            device_path_wide.as_ptr(),
+            0,
+            &mut interface_data,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+
+    inspect_interface(device_info_set.0, &interface_data)
 }
 
 fn inspect_interface(

@@ -2,12 +2,13 @@ use std::{
     ffi::c_void,
     io,
     mem::{size_of, zeroed},
+    slice,
 };
 
 use windows_sys::{
     Win32::{
         Devices::HumanInterfaceDevice::HidD_GetHidGuid,
-        Foundation::{HWND, WPARAM},
+        Foundation::{HWND, LPARAM, WPARAM},
         UI::WindowsAndMessaging::{RegisterDeviceNotificationW, UnregisterDeviceNotification},
     },
     core::GUID,
@@ -42,6 +43,62 @@ impl Change {
             Self::Removal => "removal",
         }
     }
+}
+
+pub(super) fn device_path(l_param: LPARAM) -> Option<String> {
+    if l_param == 0 {
+        return None;
+    }
+
+    let broadcast = l_param as *const DeviceInterfaceFilter;
+
+    // SAFETY:
+    // During WM_DEVICECHANGE, l_param points to the broadcast structure
+    // supplied by Windows for the duration of the window-procedure call.
+    let (size, device_type) = unsafe { ((*broadcast).size as usize, (*broadcast).device_type) };
+
+    if device_type != DBT_DEVTYP_DEVICEINTERFACE {
+        return None;
+    }
+
+    let name_offset = std::mem::offset_of!(DeviceInterfaceFilter, name);
+
+    if size <= name_offset {
+        return None;
+    }
+
+    let name_bytes = size - name_offset;
+
+    if name_bytes % size_of::<u16>() != 0 {
+        return None;
+    }
+
+    let name_units = name_bytes / size_of::<u16>();
+
+    // SAFETY:
+    // name_offset points at the variable-length UTF-16 device-interface
+    // name stored inside the Windows broadcast structure. name_units is
+    // bounded by the byte size supplied in that same structure.
+    let name = unsafe {
+        let name_ptr = broadcast.cast::<u8>().add(name_offset).cast::<u16>();
+
+        slice::from_raw_parts(name_ptr, name_units)
+    };
+
+    decode_device_path(name)
+}
+
+fn decode_device_path(name: &[u16]) -> Option<String> {
+    let end = name
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(name.len());
+
+    if end == 0 {
+        return None;
+    }
+
+    String::from_utf16(&name[..end]).ok()
 }
 
 pub(super) struct Registration(*mut c_void);
@@ -127,5 +184,17 @@ mod tests {
     #[test]
     fn ignores_unrelated_device_change() {
         assert_eq!(classify(0), None);
+    }
+
+    #[test]
+    fn decodes_device_interface_path() {
+        let path = r"\\?\HID#VID_1038&PID_1858&MI_03#TEST";
+
+        let mut encoded = path.encode_utf16().collect::<Vec<_>>();
+
+        encoded.push(0);
+        encoded.push(0);
+
+        assert_eq!(decode_device_path(&encoded), Some(path.to_string()));
     }
 }

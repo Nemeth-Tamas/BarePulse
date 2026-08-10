@@ -43,8 +43,13 @@ pub(crate) fn run() -> io::Result<()> {
     let poll_interval_seconds = config.settings.poll_interval_seconds;
 
     platform::windows::run(initial_statuses, poll_interval_seconds, move |reason| {
-        if reason == platform::windows::RefreshReason::HardwareArrival {
-            reconcile_after_hardware_arrival(&config_store, &mut config, &mut device_sessions)?;
+        if let platform::windows::RefreshReason::HardwareArrival(device_paths) = reason {
+            reconcile_after_hardware_arrival(
+                &config_store,
+                &mut config,
+                &mut device_sessions,
+                &device_paths,
+            )?;
         }
 
         Ok(poll_device_statuses(&mut device_sessions))
@@ -119,13 +124,45 @@ fn reconcile_after_hardware_arrival(
     config_store: &ConfigStore,
     config: &mut Config,
     sessions: &mut Vec<DeviceSession>,
+    device_paths: &[String],
 ) -> io::Result<()> {
-    let discovered_hardware = discovery::discover()?;
+    let discovered_hardware = if device_paths.is_empty() {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "BarePulse targeted discovery: no arrival paths; \
+             falling back to full HID discovery"
+        );
+
+        discovery::discover()?
+    } else {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "BarePulse targeted discovery: inspecting {} \
+             arriving HID interface(s)",
+            device_paths.len()
+        );
+
+        match discovery::discover_paths(device_paths) {
+            Ok(hardware) => hardware,
+
+            Err(error) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "BarePulse targeted discovery failed: {error}; \
+                     falling back to full HID discovery"
+                );
+
+                discovery::discover()?
+            }
+        }
+    };
+
     let recognized_devices = devices::recognize(&discovered_hardware);
 
     let config_changed = persist_recognized_devices(config, &recognized_devices);
 
-    let added_sessions = add_arrived_device_sessions(sessions, &recognized_devices);
+    let (rebound_sessions, added_sessions) =
+        reconcile_arrived_device_sessions(sessions, &recognized_devices);
 
     if config_changed {
         config_store.save(config)?;
@@ -133,22 +170,49 @@ fn reconcile_after_hardware_arrival(
 
     #[cfg(debug_assertions)]
     eprintln!(
-        "BarePulse arrival scan: {} supported connection(s), \
-         {added_sessions} new session(s), config_changed={config_changed}",
+        "BarePulse arrival scan: {} supported arrival(s), \
+         {rebound_sessions} rebound session(s), \
+         {added_sessions} new session(s), \
+         config_changed={config_changed}",
         recognized_devices.len(),
     );
 
     Ok(())
 }
 
-fn add_arrived_device_sessions(
+fn reconcile_arrived_device_sessions(
     sessions: &mut Vec<DeviceSession>,
     recognized_devices: &[RecognizedDevice],
-) -> usize {
+) -> (usize, usize) {
+    let mut rebound = 0;
     let mut added = 0;
 
     for recognized in recognized_devices {
-        if session_already_tracks(sessions, recognized, recognized_devices) {
+        if let Some(index) = sessions
+            .iter()
+            .position(|session| same_stable_device_identity(session.device(), recognized))
+        {
+            match sessions[index].rebind(recognized.clone()) {
+                Ok(()) => {
+                    rebound += 1;
+
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "BarePulse arrival scan: rebound {} key={}",
+                        recognized.name, recognized.hardware.hardware_key,
+                    );
+                }
+
+                Err(error) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "BarePulse arrival scan: failed to rebind {}: \
+                         {error}",
+                        recognized.name
+                    );
+                }
+            }
+
             continue;
         }
 
@@ -172,58 +236,41 @@ fn add_arrived_device_sessions(
             Err(error) => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "BarePulse arrival scan: failed to open {}: {error}",
+                    "BarePulse arrival scan: failed to open {}: \
+                     {error}",
                     recognized.name
                 );
             }
         }
     }
 
-    added
+    (rebound, added)
 }
 
-fn session_already_tracks(
-    sessions: &[DeviceSession],
-    candidate: &RecognizedDevice,
-    recognized_devices: &[RecognizedDevice],
-) -> bool {
-    if sessions
-        .iter()
-        .any(|session| session.device().hardware.hardware_key == candidate.hardware.hardware_key)
+fn same_stable_device_identity(left: &RecognizedDevice, right: &RecognizedDevice) -> bool {
+    if left.hardware.transport == right.hardware.transport
+        && left.hardware.hardware_key == right.hardware.hardware_key
     {
         return true;
     }
 
-    let matching_connections = recognized_devices
-        .iter()
-        .filter(|recognized| same_connection_identity(recognized, candidate))
-        .count();
+    let (Some(left_serial), Some(right_serial)) = (
+        left.hardware.serial_number.as_deref(),
+        right.hardware.serial_number.as_deref(),
+    ) else {
+        return false;
+    };
 
-    matching_connections == 1
-        && sessions
-            .iter()
-            .any(|session| same_connection_identity(session.device(), candidate))
+    left_serial == right_serial && same_connection_details(left, right)
 }
 
-fn same_connection_identity(left: &RecognizedDevice, right: &RecognizedDevice) -> bool {
+fn same_connection_details(left: &RecognizedDevice, right: &RecognizedDevice) -> bool {
     left.profile == right.profile
         && left.hardware.transport == right.hardware.transport
         && left.hardware.product_id == right.hardware.product_id
         && left.hardware.interface_number == right.hardware.interface_number
         && left.hardware.usage_page == right.hardware.usage_page
         && left.hardware.usage == right.hardware.usage
-        && serials_match(
-            left.hardware.serial_number.as_deref(),
-            right.hardware.serial_number.as_deref(),
-        )
-}
-
-fn serials_match(left: Option<&str>, right: Option<&str>) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => left == right,
-        (None, None) => true,
-        _ => false,
-    }
 }
 
 #[cfg(debug_assertions)]
@@ -453,7 +500,15 @@ mod tests {
     }
 
     #[test]
-    fn connection_identity_survives_instance_key_change() {
+    fn matching_hardware_key_is_stable_identity() {
+        let first = recognized_device();
+        let second = first.clone();
+
+        assert!(same_stable_device_identity(&first, &second));
+    }
+
+    #[test]
+    fn changed_key_without_serial_is_not_assumed_same() {
         let first = recognized_device();
         let mut second = first.clone();
 
@@ -461,18 +516,39 @@ mod tests {
 
         second.hardware.device_path = r"\\?\hid#replacement-aerox-instance".to_string();
 
-        assert!(same_connection_identity(&first, &second));
+        assert!(!same_stable_device_identity(&first, &second));
+    }
+
+    #[test]
+    fn matching_serial_survives_instance_key_change() {
+        let mut first = recognized_device();
+
+        first.hardware.serial_number = Some("TEST-SERIAL".to_string());
+
+        let mut second = first.clone();
+
+        second.hardware.hardware_key = "replacement-aerox-instance".to_string();
+
+        second.hardware.device_path = r"\\?\hid#replacement-aerox-instance".to_string();
+
+        assert!(same_stable_device_identity(&first, &second));
     }
 
     #[test]
     fn wired_and_wireless_connections_are_distinct() {
-        let wired = recognized_device();
+        let mut wired = recognized_device();
+
+        wired.hardware.serial_number = Some("TEST-SERIAL".to_string());
+
         let mut wireless = wired.clone();
+
+        wireless.hardware.hardware_key = "wireless-aerox".to_string();
 
         wireless.hardware.product_id = Some(0x1858);
         wireless.connection_mode = devices::ConnectionMode::Wireless;
+
         wireless.battery_protocol = BatteryProtocol::SteelSeriesAeroxPrime { command: 0xD2 };
 
-        assert!(!same_connection_identity(&wired, &wireless));
+        assert!(!same_stable_device_identity(&wired, &wireless));
     }
 }
