@@ -345,8 +345,13 @@ fn log_bluetooth_discovery(devices: &[windows_bluetooth::BluetoothDevice]) {
 
     for device in devices {
         eprintln!(
-            "  Bluetooth: name={:?} connected={} remembered={} authenticated={}",
-            device.name, device.connected, device.remembered, device.authenticated,
+            "  Bluetooth: name={:?} address={:012X} connected={} battery={:?} remembered={} authenticated={}",
+            device.name,
+            device.address,
+            device.connected,
+            device.battery_level,
+            device.remembered,
+            device.authenticated,
         );
     }
 }
