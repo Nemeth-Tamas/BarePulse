@@ -292,12 +292,6 @@ fn same_connection_details(left: &RecognizedDevice, right: &RecognizedDevice) ->
 }
 
 #[cfg(debug_assertions)]
-const LOGITECH_VENDOR_ID: u16 = 0x046D;
-
-#[cfg(debug_assertions)]
-const LOGITECH_PRO_X_PRODUCT_ID: u16 = 0x0ABA;
-
-#[cfg(debug_assertions)]
 const RECONNECT_TEST_POLLS: usize = 30;
 
 #[cfg(debug_assertions)]
@@ -406,48 +400,6 @@ fn log_discovery(
         hardware.len()
     );
 
-    for device in hardware
-        .iter()
-        .filter(|device| device.vendor_id == Some(0x1038))
-    {
-        eprintln!(
-            "  SteelSeries {:?}: VID={:04X} PID={} interface={:?} usage={:?}:{:?} product={:?} serial={:?} key={}",
-            device.transport,
-            device.vendor_id.unwrap_or_default(),
-            device
-                .product_id
-                .map(|value| format!("{value:04X}"))
-                .unwrap_or_else(|| "unknown".to_string()),
-            device.interface_number,
-            device.usage_page,
-            device.usage,
-            device.product_string,
-            device.serial_number,
-            device.hardware_key,
-        );
-    }
-
-    for device in hardware.iter().filter(|device| {
-        device.vendor_id == Some(LOGITECH_VENDOR_ID)
-            && device.product_id == Some(LOGITECH_PRO_X_PRODUCT_ID)
-    }) {
-        eprintln!(
-            "  Logitech {:?}: VID={:04X} PID={} interface={:?} usage={:?}:{:?} product={:?} serial={:?} key={}",
-            device.transport,
-            device.vendor_id.unwrap_or_default(),
-            device
-                .product_id
-                .map(|value| { format!("{value:04X}") })
-                .unwrap_or_else(|| { "unknown".to_string() }),
-            device.interface_number,
-            device.usage_page,
-            device.usage,
-            device.product_string,
-            device.serial_number,
-            device.hardware_key,
-        );
-    }
-
     eprintln!(
         "BarePulse recognition: {} supported device(s)",
         recognized_devices.len()
@@ -455,9 +407,15 @@ fn log_discovery(
 
     for device in recognized_devices {
         eprintln!(
-            "  {} [{}]: PID={} interface={:?} usage={:?}:{:?}",
+            "  {} [{}]: {:?} VID={} PID={} interface={:?} usage={:?}:{:?} product={:?} serial={:?} key={}",
             device.name,
             device.profile,
+            device.hardware.transport,
+            device
+                .hardware
+                .vendor_id
+                .map(|value| format!("{value:04X}"))
+                .unwrap_or_else(|| "unknown".to_string()),
             device
                 .hardware
                 .product_id
@@ -466,6 +424,9 @@ fn log_discovery(
             device.hardware.interface_number,
             device.hardware.usage_page,
             device.hardware.usage,
+            device.hardware.product_string,
+            device.hardware.serial_number,
+            device.hardware.hardware_key,
         );
     }
 }
