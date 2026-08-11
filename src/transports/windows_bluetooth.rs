@@ -86,16 +86,19 @@ pub(crate) fn enumerate() -> io::Result<Vec<BluetoothDevice>> {
         hRadio: std::ptr::null_mut(),
     };
 
+    #[cfg(debug_assertions)]
     let battery_nodes = match enumerate_battery_nodes() {
         Ok(nodes) => nodes,
 
-        Err(_error) => {
-            #[cfg(debug_assertions)]
-            eprintln!("BarePulse Bluetooth battery discovery failed: {_error}");
+        Err(error) => {
+            eprintln!("BarePulse Bluetooth battery discovery failed: {error}");
 
             Vec::new()
         }
     };
+
+    #[cfg(not(debug_assertions))]
+    let battery_nodes = enumerate_battery_nodes().unwrap_or_default();
 
     let mut info = empty_device_info();
 
