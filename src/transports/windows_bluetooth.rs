@@ -32,6 +32,9 @@ pub(crate) struct BluetoothDevice {
     pub(crate) address: u64,
     pub(crate) connected: bool,
     pub(crate) battery_level: Option<u8>,
+    pub(crate) battery_instance_id: Option<String>,
+    pub(crate) vendor_id_code: Option<u32>,
+    pub(crate) product_id: Option<u16>,
     pub(crate) remembered: bool,
     pub(crate) authenticated: bool,
 }
@@ -43,6 +46,8 @@ struct DeviceInfoSet(HDEVINFO);
 struct BatteryNode {
     instance_id: String,
     level: u8,
+    vendor_id_code: Option<u32>,
+    product_id: Option<u16>,
 }
 
 const BLUETOOTH_ADDRESS_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
@@ -169,16 +174,18 @@ fn device_from_info(
     // ullLong is the documented integer representation of the same address.
     let address = unsafe { info.Address.Anonymous.ullLong } & BLUETOOTH_ADDRESS_MASK;
 
-    let battery_level = battery_nodes
+    let battery_node = battery_nodes
         .iter()
-        .find(|node| instance_matches_address(&node.instance_id, address))
-        .map(|node| node.level);
+        .find(|node| instance_matches_address(&node.instance_id, address));
 
     BluetoothDevice {
         name: wide_string(&info.szName),
         address,
         connected: info.fConnected != 0,
-        battery_level,
+        battery_level: battery_node.map(|node| node.level),
+        battery_instance_id: battery_node.map(|node| node.instance_id.clone()),
+        vendor_id_code: battery_node.and_then(|node| node.vendor_id_code),
+        product_id: battery_node.and_then(|node| node.product_id),
         remembered: info.fRemembered != 0,
         authenticated: info.fAuthenticated != 0,
     }
@@ -229,7 +236,17 @@ fn enumerate_battery_nodes() -> io::Result<Vec<BatteryNode>> {
         match read_battery_property(device_info_set.0, &device_info_data) {
             Ok(Some(level)) => match read_instance_id(device_info_set.0, &device_info_data) {
                 Ok(Some(instance_id)) => {
-                    nodes.push(BatteryNode { instance_id, level });
+                    let vendor_id_code = parse_hex_field(&instance_id, "VID&", 8);
+
+                    let product_id = parse_hex_field(&instance_id, "PID&", 4)
+                        .and_then(|value| u16::try_from(value).ok());
+
+                    nodes.push(BatteryNode {
+                        instance_id,
+                        level,
+                        vendor_id_code,
+                        product_id,
+                    });
                 }
 
                 Ok(None) => {}
@@ -380,6 +397,22 @@ fn instance_matches_address(instance_id: &str, address: u64) -> bool {
     instance_id.to_ascii_uppercase().contains(&address)
 }
 
+fn parse_hex_field(value: &str, marker: &str, digits: usize) -> Option<u32> {
+    let value = value.to_ascii_uppercase();
+    let marker = marker.to_ascii_uppercase();
+
+    let start = value.find(&marker)? + marker.len();
+    let end = start.checked_add(digits)?;
+
+    let field = value.get(start..end)?;
+
+    if field.len() != digits || !field.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    u32::from_str_radix(field, 16).ok()
+}
+
 fn wide_string(value: &[u16]) -> String {
     let length = value
         .iter()
@@ -416,5 +449,21 @@ mod tests {
         assert!(instance_matches_address(instance_id, 0x0002_3CCF_828A));
 
         assert!(!instance_matches_address(instance_id, 0x0002_3CCF_828B));
+    }
+
+    #[test]
+    fn bluetooth_pnp_identity_is_parsed() {
+        let instance_id = r"BTHENUM\{0000111E-0000-1000-8000-00805F9B34FB}_VID&000105D6_PID&000A\B&204E5236&0&00023CCF828A_C00000000";
+
+        assert_eq!(parse_hex_field(instance_id, "VID&", 8), Some(0x0001_05D6));
+
+        assert_eq!(parse_hex_field(instance_id, "PID&", 4), Some(0x000A));
+    }
+
+    #[test]
+    fn malformed_bluetooth_pnp_identity_is_rejected() {
+        assert_eq!(parse_hex_field("BTHENUM\\VID&HELLO123", "VID&", 8), None);
+
+        assert_eq!(parse_hex_field("BTHENUM\\PID&12", "PID&", 4), None);
     }
 }

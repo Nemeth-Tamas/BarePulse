@@ -345,11 +345,20 @@ fn log_bluetooth_discovery(devices: &[windows_bluetooth::BluetoothDevice]) {
 
     for device in devices {
         eprintln!(
-            "  Bluetooth: name={:?} address={:012X} connected={} battery={:?} remembered={} authenticated={}",
+            "  Bluetooth: name={:?} address={:012X} connected={} battery={:?} vendor_code={} PID={} battery_node={:?} remembered={} authenticated={}",
             device.name,
             device.address,
             device.connected,
             device.battery_level,
+            device
+                .vendor_id_code
+                .map(|value| format!("{value:08X}"))
+                .unwrap_or_else(|| "unknown".to_string()),
+            device
+                .product_id
+                .map(|value| format!("{value:04X}"))
+                .unwrap_or_else(|| "unknown".to_string()),
+            device.battery_instance_id,
             device.remembered,
             device.authenticated,
         );
