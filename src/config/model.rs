@@ -41,7 +41,7 @@ pub(crate) struct DiscoveredDevice {
     pub(crate) name: String,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) vendor_id: Option<u16>,
+    pub(crate) vendor_id: Option<u32>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) product_id: Option<u16>,

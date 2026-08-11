@@ -73,7 +73,7 @@ impl RegistryTransport {
 #[serde(deny_unknown_fields)]
 struct ManifestMatch {
     transport: RegistryTransport,
-    vendor_id: u16,
+    vendor_id: u32,
     product_id: u16,
 }
 
@@ -115,7 +115,7 @@ impl RegistryConnectionMode {
 struct ProfileConnection {
     mode: RegistryConnectionMode,
     transport: RegistryTransport,
-    vendor_id: u16,
+    vendor_id: u32,
     product_id: u16,
     interface_number: u32,
     usage_page: u16,
@@ -972,7 +972,7 @@ vendor_id = 0x1038
 product_id = 0x185A
 "#;
 
-    fn hardware(vendor_id: u16, product_id: u16) -> DiscoveredHardware {
+    fn hardware(vendor_id: u32, product_id: u16) -> DiscoveredHardware {
         DiscoveredHardware {
             transport: Transport::UsbHid,
             hardware_key: "test-device".to_string(),

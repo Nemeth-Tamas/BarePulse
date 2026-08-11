@@ -14,7 +14,7 @@ use crate::{
 };
 
 #[cfg(debug_assertions)]
-use crate::{devices::BatteryPoll, transports::windows_bluetooth};
+use crate::devices::BatteryPoll;
 
 #[cfg(any(debug_assertions, test))]
 use crate::devices::BatteryProtocol;
@@ -37,16 +37,6 @@ pub(crate) fn run() -> io::Result<()> {
     #[cfg(debug_assertions)]
     {
         log_discovery(&discovered_hardware, &recognized_devices);
-
-        match windows_bluetooth::enumerate() {
-            Ok(bluetooth_devices) => {
-                log_bluetooth_discovery(&bluetooth_devices);
-            }
-
-            Err(error) => {
-                eprintln!("BarePulse Bluetooth discovery failed: {error}");
-            }
-        }
 
         if reconnect_test_requested() {
             run_reconnect_test(&mut device_sessions);
@@ -109,6 +99,7 @@ fn to_config_device(recognized: &RecognizedDevice) -> DiscoveredDevice {
     DiscoveredDevice {
         transport: match recognized.hardware.transport {
             Transport::UsbHid => DeviceTransport::UsbHid,
+            Transport::Bluetooth => DeviceTransport::Bluetooth,
         },
         hardware_key: recognized.hardware.hardware_key.clone(),
         name: recognized.name.to_string(),
@@ -337,35 +328,6 @@ fn log_device_sessions(sessions: &[DeviceSession], statuses: &[DeviceStatus]) {
 }
 
 #[cfg(debug_assertions)]
-fn log_bluetooth_discovery(devices: &[windows_bluetooth::BluetoothDevice]) {
-    eprintln!(
-        "BarePulse Bluetooth discovery: {} known device(s)",
-        devices.len()
-    );
-
-    for device in devices {
-        eprintln!(
-            "  Bluetooth: name={:?} address={:012X} connected={} battery={:?} vendor_code={} PID={} battery_node={:?} remembered={} authenticated={}",
-            device.name,
-            device.address,
-            device.connected,
-            device.battery_level,
-            device
-                .vendor_id_code
-                .map(|value| format!("{value:08X}"))
-                .unwrap_or_else(|| "unknown".to_string()),
-            device
-                .product_id
-                .map(|value| format!("{value:04X}"))
-                .unwrap_or_else(|| "unknown".to_string()),
-            device.battery_instance_id,
-            device.remembered,
-            device.authenticated,
-        );
-    }
-}
-
-#[cfg(debug_assertions)]
 fn run_reconnect_test(sessions: &mut [DeviceSession]) {
     if sessions.is_empty() {
         eprintln!("BarePulse reconnect test: no open device sessions");
@@ -434,10 +396,42 @@ fn log_discovery(
     hardware: &[discovery::DiscoveredHardware],
     recognized_devices: &[RecognizedDevice],
 ) {
+    let hid_count = hardware
+        .iter()
+        .filter(|device| device.transport == Transport::UsbHid)
+        .count();
+
+    let bluetooth_count = hardware
+        .iter()
+        .filter(|device| device.transport == Transport::Bluetooth)
+        .count();
+
     eprintln!(
-        "BarePulse discovery: {} HID interfaces currently present",
-        hardware.len()
+        "BarePulse discovery: {hid_count} HID interface(s), \
+         {bluetooth_count} Bluetooth device(s)"
     );
+
+    for device in hardware
+        .iter()
+        .filter(|device| device.transport == Transport::Bluetooth)
+    {
+        let battery_node = (!device.device_path.is_empty()).then_some(device.device_path.as_str());
+
+        eprintln!(
+            "  Bluetooth: name={:?} VID={} PID={} battery_node={:?} key={}",
+            device.product_string,
+            device
+                .vendor_id
+                .map(|value| format!("{value:08X}"))
+                .unwrap_or_else(|| "unknown".to_string()),
+            device
+                .product_id
+                .map(|value| format!("{value:04X}"))
+                .unwrap_or_else(|| "unknown".to_string()),
+            battery_node,
+            device.hardware_key,
+        );
+    }
 
     eprintln!(
         "BarePulse recognition: {} supported device(s)",

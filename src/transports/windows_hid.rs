@@ -154,7 +154,7 @@ impl Drop for OwnedHandle {
 
 #[derive(Default)]
 struct HidMetadata {
-    vendor_id: Option<u16>,
+    vendor_id: Option<u32>,
     product_id: Option<u16>,
     usage_page: Option<u16>,
     usage: Option<u16>,
@@ -311,7 +311,7 @@ fn inspect_interface(
         return Ok(None);
     };
 
-    let parsed_vendor_id = parse_hex_field_u16(&instance_id, "vid_");
+    let parsed_vendor_id = parse_hex_field_u16(&instance_id, "vid_").map(u32::from);
     let parsed_product_id = parse_hex_field_u16(&instance_id, "pid_");
     let interface_number = parse_hex_field_u32(&instance_id, "mi_");
 
@@ -446,7 +446,10 @@ fn read_hid_metadata(device_path: &str) -> io::Result<HidMetadata> {
     attributes.Size = size_of::<HIDD_ATTRIBUTES>() as u32;
 
     let (vendor_id, product_id) = if unsafe { HidD_GetAttributes(handle.0, &mut attributes) } {
-        (Some(attributes.VendorID), Some(attributes.ProductID))
+        (
+            Some(u32::from(attributes.VendorID)),
+            Some(attributes.ProductID),
+        )
     } else {
         (None, None)
     };

@@ -30,13 +30,9 @@ use windows_sys::{
 pub(crate) struct BluetoothDevice {
     pub(crate) name: String,
     pub(crate) address: u64,
-    pub(crate) connected: bool,
-    pub(crate) battery_level: Option<u8>,
     pub(crate) battery_instance_id: Option<String>,
-    pub(crate) vendor_id_code: Option<u32>,
+    pub(crate) vendor_id: Option<u32>,
     pub(crate) product_id: Option<u16>,
-    pub(crate) remembered: bool,
-    pub(crate) authenticated: bool,
 }
 
 struct BluetoothFindHandle(HBLUETOOTH_DEVICE_FIND);
@@ -45,8 +41,7 @@ struct DeviceInfoSet(HDEVINFO);
 
 struct BatteryNode {
     instance_id: String,
-    level: u8,
-    vendor_id_code: Option<u32>,
+    vendor_id: Option<u32>,
     product_id: Option<u16>,
 }
 
@@ -181,13 +176,9 @@ fn device_from_info(
     BluetoothDevice {
         name: wide_string(&info.szName),
         address,
-        connected: info.fConnected != 0,
-        battery_level: battery_node.map(|node| node.level),
         battery_instance_id: battery_node.map(|node| node.instance_id.clone()),
-        vendor_id_code: battery_node.and_then(|node| node.vendor_id_code),
+        vendor_id: battery_node.and_then(|node| node.vendor_id),
         product_id: battery_node.and_then(|node| node.product_id),
-        remembered: info.fRemembered != 0,
-        authenticated: info.fAuthenticated != 0,
     }
 }
 
@@ -234,17 +225,16 @@ fn enumerate_battery_nodes() -> io::Result<Vec<BatteryNode>> {
         }
 
         match read_battery_property(device_info_set.0, &device_info_data) {
-            Ok(Some(level)) => match read_instance_id(device_info_set.0, &device_info_data) {
+            Ok(Some(_level)) => match read_instance_id(device_info_set.0, &device_info_data) {
                 Ok(Some(instance_id)) => {
-                    let vendor_id_code = parse_hex_field(&instance_id, "VID&", 8);
+                    let vendor_id = parse_hex_field(&instance_id, "VID&", 8);
 
                     let product_id = parse_hex_field(&instance_id, "PID&", 4)
                         .and_then(|value| u16::try_from(value).ok());
 
                     nodes.push(BatteryNode {
                         instance_id,
-                        level,
-                        vendor_id_code,
+                        vendor_id,
                         product_id,
                     });
                 }
@@ -314,7 +304,7 @@ fn read_battery_property(
         return Err(io::Error::from_raw_os_error(error as i32));
     }
 
-    if property_type != DEVPROP_TYPE_BYTE as u32 {
+    if property_type != DEVPROP_TYPE_BYTE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Bluetooth battery property has unexpected type {property_type}"),
