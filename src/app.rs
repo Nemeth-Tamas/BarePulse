@@ -14,7 +14,7 @@ use crate::{
 };
 
 #[cfg(debug_assertions)]
-use crate::devices::BatteryPoll;
+use crate::{devices::BatteryPoll, transports::windows_bluetooth};
 
 #[cfg(any(debug_assertions, test))]
 use crate::devices::BatteryProtocol;
@@ -37,6 +37,16 @@ pub(crate) fn run() -> io::Result<()> {
     #[cfg(debug_assertions)]
     {
         log_discovery(&discovered_hardware, &recognized_devices);
+
+        match windows_bluetooth::enumerate() {
+            Ok(bluetooth_devices) => {
+                log_bluetooth_discovery(&bluetooth_devices);
+            }
+
+            Err(error) => {
+                eprintln!("BarePulse Bluetooth discovery failed: {error}");
+            }
+        }
 
         if reconnect_test_requested() {
             run_reconnect_test(&mut device_sessions);
@@ -322,6 +332,21 @@ fn log_device_sessions(sessions: &[DeviceSession], statuses: &[DeviceStatus]) {
         eprintln!(
             "BarePulse status: {} mode={:?} connection={:?} battery={:?}",
             status.name, status.mode, status.connection, status.battery,
+        );
+    }
+}
+
+#[cfg(debug_assertions)]
+fn log_bluetooth_discovery(devices: &[windows_bluetooth::BluetoothDevice]) {
+    eprintln!(
+        "BarePulse Bluetooth discovery: {} known device(s)",
+        devices.len()
+    );
+
+    for device in devices {
+        eprintln!(
+            "  Bluetooth: name={:?} connected={} remembered={} authenticated={}",
+            device.name, device.connected, device.remembered, device.authenticated,
         );
     }
 }

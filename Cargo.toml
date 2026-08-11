@@ -10,6 +10,7 @@ toml = "1.1.3"
 [dependencies.windows-sys]
 version = "0.61.2"
 features = [
+    "Win32_Devices_Bluetooth",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_HumanInterfaceDevice",
     "Win32_Foundation",
