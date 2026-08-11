@@ -1,10 +1,7 @@
 use std::io;
 
 #[cfg(debug_assertions)]
-use std::{
-    env, thread,
-    time::{Duration, Instant},
-};
+use std::{env, thread, time::Duration};
 
 use crate::{
     config::{
@@ -17,7 +14,7 @@ use crate::{
 };
 
 #[cfg(debug_assertions)]
-use crate::{devices::BatteryPoll, protocols::logitech_hidpp, transports::windows_hid::HidDevice};
+use crate::devices::BatteryPoll;
 
 #[cfg(any(debug_assertions, test))]
 use crate::devices::BatteryProtocol;
@@ -40,14 +37,6 @@ pub(crate) fn run() -> io::Result<()> {
     #[cfg(debug_assertions)]
     {
         log_discovery(&discovered_hardware, &recognized_devices);
-
-        if logitech_hidpp_test_requested() {
-            run_logitech_hidpp_test(&discovered_hardware);
-        }
-
-        if logitech_passive_test_requested() {
-            run_logitech_passive_test(&discovered_hardware);
-        }
 
         if reconnect_test_requested() {
             run_reconnect_test(&mut device_sessions);
@@ -307,192 +296,6 @@ const LOGITECH_VENDOR_ID: u16 = 0x046D;
 
 #[cfg(debug_assertions)]
 const LOGITECH_PRO_X_PRODUCT_ID: u16 = 0x0ABA;
-
-#[cfg(debug_assertions)]
-const LOGITECH_CONTROL_INTERFACE: u32 = 3;
-
-#[cfg(debug_assertions)]
-const LOGITECH_HIDPP_USAGE_PAGE: u16 = 0xFF43;
-
-#[cfg(debug_assertions)]
-const LOGITECH_HIDPP_USAGE: u16 = 0x0202;
-
-#[cfg(debug_assertions)]
-const LOGITECH_PASSIVE_TEST_DURATION: Duration = Duration::from_secs(30);
-
-#[cfg(debug_assertions)]
-const LOGITECH_PASSIVE_READ_TIMEOUT: Duration = Duration::from_millis(50);
-
-#[cfg(debug_assertions)]
-fn logitech_hidpp_test_requested() -> bool {
-    env::var_os("BAREPULSE_LOGITECH_HIDPP_TEST").is_some()
-}
-
-#[cfg(debug_assertions)]
-fn run_logitech_hidpp_test(hardware: &[discovery::DiscoveredHardware]) {
-    let candidate = hardware.iter().find(|device| {
-        device.vendor_id == Some(LOGITECH_VENDOR_ID)
-            && device.product_id == Some(LOGITECH_PRO_X_PRODUCT_ID)
-            && device.interface_number == Some(LOGITECH_CONTROL_INTERFACE)
-            && device.usage_page == Some(LOGITECH_HIDPP_USAGE_PAGE)
-            && device.usage == Some(LOGITECH_HIDPP_USAGE)
-    });
-
-    let Some(candidate) = candidate else {
-        eprintln!("BarePulse Logitech HID++ test: FF43:0202 collection not found");
-
-        return;
-    };
-
-    eprintln!(
-        "BarePulse Logitech HID++ test: opening {}",
-        candidate.hardware_key
-    );
-
-    let device = match HidDevice::open(&candidate.device_path) {
-        Ok(device) => device,
-
-        Err(error) => {
-            eprintln!("BarePulse Logitech HID++ test: open failed: {error}");
-
-            return;
-        }
-    };
-
-    match logitech_hidpp::query(&device) {
-        Ok(logitech_hidpp::QueryOutcome::Reading(reading)) => {
-            eprintln!(
-                "BarePulse Logitech HID++ battery: level=~{}% charging={}",
-                reading.level, reading.charging,
-            );
-        }
-
-        Ok(logitech_hidpp::QueryOutcome::Sleeping) => {
-            eprintln!("BarePulse Logitech HID++ battery: headset inactive");
-        }
-
-        Err(error) => {
-            eprintln!("BarePulse Logitech HID++ battery probe failed: {error}");
-        }
-    }
-}
-
-#[cfg(debug_assertions)]
-fn logitech_passive_test_requested() -> bool {
-    env::var_os("BAREPULSE_LOGITECH_PASSIVE_TEST").is_some()
-}
-
-#[cfg(debug_assertions)]
-fn run_logitech_passive_test(hardware: &[discovery::DiscoveredHardware]) {
-    let candidates = hardware
-        .iter()
-        .filter(|device| {
-            device.vendor_id == Some(LOGITECH_VENDOR_ID)
-                && device.product_id == Some(LOGITECH_PRO_X_PRODUCT_ID)
-                && device.interface_number == Some(LOGITECH_CONTROL_INTERFACE)
-                && device
-                    .usage_page
-                    .is_some_and(|usage_page| usage_page >= 0xFF00)
-        })
-        .collect::<Vec<_>>();
-
-    eprintln!(
-        "BarePulse Logitech passive test: {} candidate vendor HID collection(s)",
-        candidates.len()
-    );
-
-    let mut probes = Vec::new();
-
-    for device in candidates {
-        match HidDevice::open_read_only(&device.device_path) {
-            Ok(probe) => {
-                let lengths = probe.report_lengths();
-
-                eprintln!(
-                    "BarePulse Logitech candidate: PID={:04X} interface={:?} usage={:04X}:{:04X} input={} output={} feature={} product={:?} key={}",
-                    device.product_id.unwrap_or_default(),
-                    device.interface_number,
-                    device.usage_page.unwrap_or_default(),
-                    device.usage.unwrap_or_default(),
-                    lengths.input,
-                    lengths.output,
-                    lengths.feature,
-                    device.product_string,
-                    device.hardware_key,
-                );
-
-                probes.push((device, probe, None::<Vec<u8>>, true));
-            }
-
-            Err(error) => {
-                eprintln!(
-                    "BarePulse Logitech candidate open failed: usage={:04X}:{:04X} error={error}",
-                    device.usage_page.unwrap_or_default(),
-                    device.usage.unwrap_or_default(),
-                );
-            }
-        }
-    }
-
-    if probes.is_empty() {
-        eprintln!("BarePulse Logitech passive test: no readable vendor HID collections");
-
-        return;
-    }
-
-    eprintln!(
-        "BarePulse Logitech passive test: listening for {} seconds; toggle the headset power OFF and ON while the receiver remains connected",
-        LOGITECH_PASSIVE_TEST_DURATION.as_secs()
-    );
-
-    let deadline = Instant::now() + LOGITECH_PASSIVE_TEST_DURATION;
-
-    while Instant::now() < deadline {
-        let mut any_active = false;
-
-        for (device, probe, last_report, active) in &mut probes {
-            if !*active {
-                continue;
-            }
-
-            any_active = true;
-
-            match probe.read_report(LOGITECH_PASSIVE_READ_TIMEOUT) {
-                Ok(Some(report)) => {
-                    if last_report.as_ref() == Some(&report) {
-                        continue;
-                    }
-
-                    eprintln!(
-                        "BarePulse Logitech passive report: usage={:04X}:{:04X} bytes={report:?}",
-                        device.usage_page.unwrap_or_default(),
-                        device.usage.unwrap_or_default(),
-                    );
-
-                    *last_report = Some(report);
-                }
-
-                Ok(None) => {}
-
-                Err(error) => {
-                    eprintln!(
-                        "BarePulse Logitech passive read failed: usage={:04X}:{:04X} error={error}",
-                        device.usage_page.unwrap_or_default(),
-                        device.usage.unwrap_or_default(),
-                    );
-
-                    *active = false;
-                }
-            }
-        }
-
-        if !any_active {
-            break;
-        }
-    }
-
-    eprintln!("BarePulse Logitech passive test: finished");
-}
 
 #[cfg(debug_assertions)]
 const RECONNECT_TEST_POLLS: usize = 30;

@@ -152,7 +152,7 @@
 - [X] Determine battery protocol — HID++ 2.0 ADC Measurement `0x1F20`
 - [X] Add required generic protocol support
 - [X] Add Logitech device profile
-- [ ] Test without Logitech application running
+- [X] Test without Logitech application running
 
 ### Sony WH-1000XM5
 
