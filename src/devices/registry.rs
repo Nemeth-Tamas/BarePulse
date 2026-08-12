@@ -58,6 +58,7 @@ struct ManifestProfile {
 #[serde(rename_all = "kebab-case")]
 enum RegistryTransport {
     UsbHid,
+    Bluetooth,
 }
 
 impl RegistryTransport {
@@ -65,6 +66,7 @@ impl RegistryTransport {
         matches!(
             (self, transport),
             (Self::UsbHid, DiscoveryTransport::UsbHid)
+                | (Self::Bluetooth, DiscoveryTransport::Bluetooth)
         )
     }
 }
@@ -92,6 +94,7 @@ struct DeviceProfile {
 enum RegistryProtocol {
     SteelseriesAeroxPrime,
     LogitechHidppAdc,
+    WindowsBluetoothBattery,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
@@ -117,9 +120,16 @@ struct ProfileConnection {
     transport: RegistryTransport,
     vendor_id: u32,
     product_id: u16,
-    interface_number: u32,
-    usage_page: u16,
-    usage: u16,
+
+    #[serde(default)]
+    interface_number: Option<u32>,
+
+    #[serde(default)]
+    usage_page: Option<u16>,
+
+    #[serde(default)]
+    usage: Option<u16>,
+
     #[serde(default)]
     battery_command: Option<u8>,
 }
@@ -143,9 +153,9 @@ impl ProfileConnection {
         self.transport.matches(hardware.transport)
             && hardware.vendor_id == Some(self.vendor_id)
             && hardware.product_id == Some(self.product_id)
-            && hardware.interface_number == Some(self.interface_number)
-            && hardware.usage_page == Some(self.usage_page)
-            && hardware.usage == Some(self.usage)
+            && hardware.interface_number == self.interface_number
+            && hardware.usage_page == self.usage_page
+            && hardware.usage == self.usage
     }
 }
 
@@ -162,6 +172,8 @@ impl DeviceProfile {
             },
 
             RegistryProtocol::LogitechHidppAdc => BatteryProtocol::LogitechHidppAdc,
+
+            RegistryProtocol::WindowsBluetoothBattery => BatteryProtocol::WindowsBluetoothBattery,
         };
 
         Some(RecognizedDevice {
@@ -888,7 +900,65 @@ fn validate_profile(manifest_profile: &ManifestProfile, profile: &DeviceProfile)
                 ));
             }
 
+            RegistryProtocol::WindowsBluetoothBattery if connection.battery_command.is_some() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Windows Bluetooth battery profile {} must not define battery_command",
+                        profile.id
+                    ),
+                ));
+            }
+
             _ => {}
+        }
+
+        match connection.transport {
+            RegistryTransport::UsbHid
+                if connection.interface_number.is_none()
+                    || connection.usage_page.is_none()
+                    || connection.usage.is_none() =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "USB HID profile {} connection is missing HID interface or usage metadata",
+                        profile.id
+                    ),
+                ));
+            }
+
+            RegistryTransport::Bluetooth
+                if connection.interface_number.is_some()
+                    || connection.usage_page.is_some()
+                    || connection.usage.is_some() =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Bluetooth profile {} must not define HID interface or usage metadata",
+                        profile.id
+                    ),
+                ));
+            }
+
+            _ => {}
+        }
+
+        match (profile.protocol, connection.transport) {
+            (RegistryProtocol::SteelseriesAeroxPrime, RegistryTransport::UsbHid)
+            | (RegistryProtocol::LogitechHidppAdc, RegistryTransport::UsbHid)
+            | (RegistryProtocol::WindowsBluetoothBattery, RegistryTransport::Bluetooth) => {}
+
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "device profile {} protocol is incompatible with its transport",
+                        profile.id
+                    ),
+                ));
+            }
         }
 
         let identity = (

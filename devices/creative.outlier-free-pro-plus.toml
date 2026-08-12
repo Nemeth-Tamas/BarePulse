@@ -1,0 +1,11 @@
+schema = 1
+
+id = "creative.outlier-free-pro-plus"
+name = "Creative Outlier Free Pro+"
+protocol = "windows-bluetooth-battery"
+
+[[connections]]
+mode = "wireless"
+transport = "bluetooth"
+vendor_id = 0x000105D6
+product_id = 0x000A

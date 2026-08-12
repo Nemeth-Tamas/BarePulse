@@ -13,9 +13,17 @@ const AEROX_PROFILE_FILE: &str = "steelseries.aerox9.toml";
 const AEROX_PROFILE_SHA256: &str =
     "0abbc78f18c981cc4d2691a9550c660718052d960583e1d00177603adc256486";
 
-const STEELSERIES_VENDOR_ID: u16 = 0x1038;
+const STEELSERIES_VENDOR_ID: u32 = 0x1038;
 const AEROX_WIRELESS_PRODUCT_ID: u16 = 0x1858;
 const AEROX_WIRED_PRODUCT_ID: u16 = 0x185A;
+
+const CREATIVE_PROFILE_ID: &str = "creative.outlier-free-pro-plus";
+const CREATIVE_PROFILE_FILE: &str = "creative.outlier-free-pro-plus.toml";
+const CREATIVE_PROFILE_SHA256: &str =
+    "a3133c6c58fe9d4cc03ff7e1d657522b2b03f311fca47f2c16a48b2d0345d9d0";
+
+const CREATIVE_VENDOR_ID: u32 = 0x0001_05D6;
+const CREATIVE_PRODUCT_ID: u16 = 0x000A;
 
 const MANAGEMENT_INTERFACE: u32 = 3;
 const MANAGEMENT_USAGE_PAGE: u16 = 0xFFC0;
@@ -48,13 +56,14 @@ struct ManifestProfile {
 #[serde(rename_all = "kebab-case")]
 enum Transport {
     UsbHid,
+    Bluetooth,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 struct ManifestMatch {
     transport: Transport,
-    vendor_id: u16,
+    vendor_id: u32,
     product_id: u16,
 }
 
@@ -72,6 +81,7 @@ struct DeviceProfile {
 #[serde(rename_all = "kebab-case")]
 enum Protocol {
     SteelseriesAeroxPrime,
+    WindowsBluetoothBattery,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
@@ -86,12 +96,20 @@ enum ConnectionMode {
 struct Connection {
     mode: ConnectionMode,
     transport: Transport,
-    vendor_id: u16,
+    vendor_id: u32,
     product_id: u16,
-    interface_number: u32,
-    usage_page: u16,
-    usage: u16,
-    battery_command: u8,
+
+    #[serde(default)]
+    interface_number: Option<u32>,
+
+    #[serde(default)]
+    usage_page: Option<u16>,
+
+    #[serde(default)]
+    usage: Option<u16>,
+
+    #[serde(default)]
+    battery_command: Option<u8>,
 }
 
 fn devices_directory() -> PathBuf {
@@ -115,7 +133,7 @@ fn manifest_is_valid_and_contains_aerox_9() {
     let manifest: Manifest = read_toml(&directory.join("manifest.toml"));
 
     assert_eq!(manifest.schema, REGISTRY_SCHEMA);
-    assert_eq!(manifest.revision, 1);
+    assert_eq!(manifest.revision, 2);
     assert!(!manifest.profiles.is_empty());
 
     let mut profile_ids = HashSet::new();
@@ -167,6 +185,21 @@ fn manifest_is_valid_and_contains_aerox_9() {
             && device_match.vendor_id == STEELSERIES_VENDOR_ID
             && device_match.product_id == AEROX_WIRED_PRODUCT_ID
     }));
+
+    let creative = manifest
+        .profiles
+        .iter()
+        .find(|profile| profile.id == CREATIVE_PROFILE_ID)
+        .expect("Creative Outlier Free Pro+ registry entry should exist");
+
+    assert_eq!(creative.path, CREATIVE_PROFILE_FILE);
+    assert_eq!(creative.sha256, CREATIVE_PROFILE_SHA256);
+
+    assert!(creative.matches.iter().any(|device_match| {
+        device_match.transport == Transport::Bluetooth
+            && device_match.vendor_id == CREATIVE_VENDOR_ID
+            && device_match.product_id == CREATIVE_PRODUCT_ID
+    }));
 }
 
 #[test]
@@ -188,10 +221,10 @@ fn aerox_9_profile_matches_proven_hardware_contract() {
     assert_eq!(wireless.transport, Transport::UsbHid);
     assert_eq!(wireless.vendor_id, STEELSERIES_VENDOR_ID);
     assert_eq!(wireless.product_id, AEROX_WIRELESS_PRODUCT_ID);
-    assert_eq!(wireless.interface_number, MANAGEMENT_INTERFACE);
-    assert_eq!(wireless.usage_page, MANAGEMENT_USAGE_PAGE);
-    assert_eq!(wireless.usage, MANAGEMENT_USAGE);
-    assert_eq!(wireless.battery_command, WIRELESS_BATTERY_COMMAND);
+    assert_eq!(wireless.interface_number, Some(MANAGEMENT_INTERFACE));
+    assert_eq!(wireless.usage_page, Some(MANAGEMENT_USAGE_PAGE));
+    assert_eq!(wireless.usage, Some(MANAGEMENT_USAGE));
+    assert_eq!(wireless.battery_command, Some(WIRELESS_BATTERY_COMMAND));
 
     let wired = profile
         .connections
@@ -202,10 +235,33 @@ fn aerox_9_profile_matches_proven_hardware_contract() {
     assert_eq!(wired.transport, Transport::UsbHid);
     assert_eq!(wired.vendor_id, STEELSERIES_VENDOR_ID);
     assert_eq!(wired.product_id, AEROX_WIRED_PRODUCT_ID);
-    assert_eq!(wired.interface_number, MANAGEMENT_INTERFACE);
-    assert_eq!(wired.usage_page, MANAGEMENT_USAGE_PAGE);
-    assert_eq!(wired.usage, MANAGEMENT_USAGE);
-    assert_eq!(wired.battery_command, WIRED_BATTERY_COMMAND);
+    assert_eq!(wired.interface_number, Some(MANAGEMENT_INTERFACE));
+    assert_eq!(wired.usage_page, Some(MANAGEMENT_USAGE_PAGE));
+    assert_eq!(wired.usage, Some(MANAGEMENT_USAGE));
+    assert_eq!(wired.battery_command, Some(WIRED_BATTERY_COMMAND));
+}
+
+#[test]
+fn creative_outlier_profile_matches_proven_bluetooth_contract() {
+    let profile: DeviceProfile = read_toml(&devices_directory().join(CREATIVE_PROFILE_FILE));
+
+    assert_eq!(profile.schema, REGISTRY_SCHEMA);
+    assert_eq!(profile.id, CREATIVE_PROFILE_ID);
+    assert_eq!(profile.name, "Creative Outlier Free Pro+");
+    assert_eq!(profile.protocol, Protocol::WindowsBluetoothBattery);
+    assert_eq!(profile.connections.len(), 1);
+
+    let wireless = &profile.connections[0];
+
+    assert_eq!(wireless.mode, ConnectionMode::Wireless);
+    assert_eq!(wireless.transport, Transport::Bluetooth);
+    assert_eq!(wireless.vendor_id, CREATIVE_VENDOR_ID);
+    assert_eq!(wireless.product_id, CREATIVE_PRODUCT_ID);
+
+    assert_eq!(wireless.interface_number, None);
+    assert_eq!(wireless.usage_page, None);
+    assert_eq!(wireless.usage, None);
+    assert_eq!(wireless.battery_command, None);
 }
 
 #[test]

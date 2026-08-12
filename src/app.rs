@@ -118,6 +118,7 @@ fn to_config_device(recognized: &RecognizedDevice) -> DiscoveredDevice {
 fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
     devices
         .iter()
+        .filter(|device| device.hardware.transport == Transport::UsbHid)
         .filter_map(|device| match DeviceSession::open(device.clone()) {
             Ok(session) => Some(session),
 
@@ -134,6 +135,7 @@ fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
 fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
     devices
         .iter()
+        .filter(|device| device.hardware.transport == Transport::UsbHid)
         .filter_map(|device| DeviceSession::open(device.clone()).ok())
         .collect()
 }
@@ -346,7 +348,7 @@ fn run_reconnect_test(sessions: &mut [DeviceSession]) {
             let command = match session.device().battery_protocol {
                 BatteryProtocol::SteelSeriesAeroxPrime { command } => command,
 
-                BatteryProtocol::LogitechHidppAdc => {
+                BatteryProtocol::LogitechHidppAdc | BatteryProtocol::WindowsBluetoothBattery => {
                     eprintln!(
                         "BarePulse reconnect test: skipping non-SteelSeries device {}",
                         session.device().name

@@ -1,7 +1,7 @@
 schema = 1
 
 # Increment whenever registry contents change.
-revision = 1
+revision = 2
 
 [[profiles]]
 id = "steelseries.aerox9"
@@ -27,3 +27,13 @@ sha256 = "fc948d8ae0c623b7e34f22a39f6c4768454b19d632ab04ab100474ce64c95d3d"
 transport = "usb-hid"
 vendor_id = 0x046D
 product_id = 0x0ABA
+
+[[profiles]]
+id = "creative.outlier-free-pro-plus"
+path = "creative.outlier-free-pro-plus.toml"
+sha256 = "a3133c6c58fe9d4cc03ff7e1d657522b2b03f311fca47f2c16a48b2d0345d9d0"
+
+[[profiles.matches]]
+transport = "bluetooth"
+vendor_id = 0x000105D6
+product_id = 0x000A

@@ -177,6 +177,11 @@ fn query_once(hid_device: &HidDevice, protocol: BatteryProtocol) -> io::Result<B
 
             LogitechQueryOutcome::Sleeping => Ok(BatteryPoll::Sleeping),
         },
+
+        BatteryProtocol::WindowsBluetoothBattery => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Windows Bluetooth battery protocol does not use HID",
+        )),
     }
 }
 
