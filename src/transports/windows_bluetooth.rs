@@ -13,8 +13,9 @@ use windows_sys::{
             },
             DeviceAndDriverInstallation::{
                 DIGCF_ALLCLASSES, DIGCF_PRESENT, HDEVINFO, SP_DEVINFO_DATA,
-                SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-                SetupDiGetDeviceInstanceIdW, SetupDiGetDevicePropertyW,
+                SetupDiCreateDeviceInfoList, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
+                SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW, SetupDiGetDevicePropertyW,
+                SetupDiOpenDeviceInfoW,
             },
             Properties::DEVPROP_TYPE_BYTE,
         },
@@ -33,6 +34,17 @@ pub(crate) struct BluetoothDevice {
     pub(crate) battery_instance_id: Option<String>,
     pub(crate) vendor_id: Option<u32>,
     pub(crate) product_id: Option<u16>,
+}
+
+pub(crate) struct BluetoothSession {
+    address: u64,
+    battery_instance_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BluetoothStatus {
+    pub(crate) connected: bool,
+    pub(crate) battery_level: Option<u8>,
 }
 
 struct BluetoothFindHandle(HBLUETOOTH_DEVICE_FIND);
@@ -67,24 +79,48 @@ impl Drop for DeviceInfoSet {
     fn drop(&mut self) {
         // SAFETY:
         // This device-information-set handle was returned successfully by
-        // SetupDiGetClassDevsW and is owned exclusively by this wrapper.
+        // SetupAPI and is owned exclusively by this wrapper.
         unsafe {
             SetupDiDestroyDeviceInfoList(self.0);
         }
     }
 }
 
+impl BluetoothSession {
+    pub(crate) fn open(hardware_key: &str, battery_instance_id: &str) -> io::Result<Self> {
+        let address = parse_bluetooth_address(hardware_key)?;
+
+        if battery_instance_id.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Bluetooth battery device instance ID is empty",
+            ));
+        }
+
+        Ok(Self {
+            address,
+            battery_instance_id: battery_instance_id.to_string(),
+        })
+    }
+
+    pub(crate) fn poll(&self) -> io::Result<BluetoothStatus> {
+        let connected = is_connected(self.address)?;
+
+        let battery_level = if connected {
+            read_battery_for_instance(&self.battery_instance_id)?
+        } else {
+            None
+        };
+
+        Ok(BluetoothStatus {
+            connected,
+            battery_level,
+        })
+    }
+}
+
 pub(crate) fn enumerate() -> io::Result<Vec<BluetoothDevice>> {
-    let search_params = BLUETOOTH_DEVICE_SEARCH_PARAMS {
-        dwSize: size_of::<BLUETOOTH_DEVICE_SEARCH_PARAMS>() as u32,
-        fReturnAuthenticated: 1,
-        fReturnRemembered: 1,
-        fReturnUnknown: 0,
-        fReturnConnected: 1,
-        fIssueInquiry: 0,
-        cTimeoutMultiplier: 0,
-        hRadio: std::ptr::null_mut(),
-    };
+    let search_params = search_params();
 
     #[cfg(debug_assertions)]
     let battery_nodes = match enumerate_battery_nodes() {
@@ -150,6 +186,137 @@ pub(crate) fn enumerate() -> io::Result<Vec<BluetoothDevice>> {
     }
 
     Ok(devices)
+}
+
+fn search_params() -> BLUETOOTH_DEVICE_SEARCH_PARAMS {
+    BLUETOOTH_DEVICE_SEARCH_PARAMS {
+        dwSize: size_of::<BLUETOOTH_DEVICE_SEARCH_PARAMS>() as u32,
+        fReturnAuthenticated: 1,
+        fReturnRemembered: 1,
+        fReturnUnknown: 0,
+        fReturnConnected: 1,
+        fIssueInquiry: 0,
+        cTimeoutMultiplier: 0,
+        hRadio: null_mut(),
+    }
+}
+
+fn is_connected(address: u64) -> io::Result<bool> {
+    let search_params = search_params();
+    let mut info = empty_device_info();
+
+    // SAFETY:
+    // The search structure and output structure have their required size
+    // fields initialized. No active inquiry is requested.
+    let raw_find_handle = unsafe { BluetoothFindFirstDevice(&search_params, &mut info) };
+
+    if raw_find_handle.is_null() {
+        // SAFETY:
+        // Reads the error from the immediately preceding Bluetooth API call.
+        let error = unsafe { GetLastError() };
+
+        if error == ERROR_NO_MORE_ITEMS {
+            return Ok(false);
+        }
+
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+
+    let find_handle = BluetoothFindHandle(raw_find_handle);
+
+    loop {
+        // SAFETY:
+        // BLUETOOTH_ADDRESS is a union populated by Windows.
+        let candidate_address = unsafe { info.Address.Anonymous.ullLong } & BLUETOOTH_ADDRESS_MASK;
+
+        if candidate_address == address {
+            return Ok(info.fConnected != 0);
+        }
+
+        info = empty_device_info();
+
+        // SAFETY:
+        // find_handle is a live Bluetooth enumeration handle and info has
+        // its required dwSize field initialized.
+        let found = unsafe { BluetoothFindNextDevice(find_handle.0, &mut info) };
+
+        if found != 0 {
+            continue;
+        }
+
+        // SAFETY:
+        // Reads the error from the immediately preceding Bluetooth API call.
+        let error = unsafe { GetLastError() };
+
+        if error == ERROR_NO_MORE_ITEMS {
+            return Ok(false);
+        }
+
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+}
+
+fn read_battery_for_instance(instance_id: &str) -> io::Result<Option<u8>> {
+    // SAFETY:
+    // A null class GUID creates an unrestricted local device information set.
+    let raw_device_info_set = unsafe { SetupDiCreateDeviceInfoList(null(), null_mut()) };
+
+    if raw_device_info_set == INVALID_HANDLE_VALUE as isize {
+        return Err(io::Error::last_os_error());
+    }
+
+    let device_info_set = DeviceInfoSet(raw_device_info_set);
+
+    // SAFETY:
+    // SP_DEVINFO_DATA is populated by SetupDiOpenDeviceInfoW and requires
+    // cbSize to be initialized by the caller.
+    let mut device_info_data: SP_DEVINFO_DATA = unsafe { zeroed() };
+    device_info_data.cbSize = size_of::<SP_DEVINFO_DATA>() as u32;
+
+    let instance_id = instance_id
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+
+    // SAFETY:
+    // instance_id is a null-terminated UTF-16 device instance identifier.
+    // device_info_set is valid and device_info_data points to writable storage.
+    let opened = unsafe {
+        SetupDiOpenDeviceInfoW(
+            device_info_set.0,
+            instance_id.as_ptr(),
+            null_mut(),
+            0,
+            &mut device_info_data,
+        )
+    };
+
+    if opened == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    read_battery_property(device_info_set.0, &device_info_data)
+}
+
+fn parse_bluetooth_address(hardware_key: &str) -> io::Result<u64> {
+    if hardware_key.len() != 12 || !hardware_key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid Bluetooth hardware key: {hardware_key}"),
+        ));
+    }
+
+    let address = u64::from_str_radix(hardware_key, 16)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+
+    if address > BLUETOOTH_ADDRESS_MASK {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Bluetooth address is outside the 48-bit range: {hardware_key}"),
+        ));
+    }
+
+    Ok(address)
 }
 
 fn empty_device_info() -> BLUETOOTH_DEVICE_INFO {
@@ -458,5 +625,19 @@ mod tests {
         assert_eq!(parse_hex_field("BTHENUM\\VID&HELLO123", "VID&", 8), None);
 
         assert_eq!(parse_hex_field("BTHENUM\\PID&12", "PID&", 4), None);
+    }
+
+    #[test]
+    fn bluetooth_hardware_key_parses_address() {
+        assert_eq!(
+            parse_bluetooth_address("00023CCF828A").expect("valid Bluetooth address"),
+            0x0002_3CCF_828A
+        );
+    }
+
+    #[test]
+    fn malformed_bluetooth_hardware_key_is_rejected() {
+        assert!(parse_bluetooth_address("not-an-address").is_err());
+        assert!(parse_bluetooth_address("1234").is_err());
     }
 }

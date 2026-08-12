@@ -1,13 +1,13 @@
 use std::io;
 
 use crate::{
-    discovery,
+    discovery::{self, Transport},
     protocols::{
         BatteryReading,
         logitech_hidpp::{self, QueryOutcome as LogitechQueryOutcome},
         steelseries_aerox_prime::{self, QueryOutcome as SteelSeriesQueryOutcome},
     },
-    transports::windows_hid::HidDevice,
+    transports::{windows_bluetooth::BluetoothSession, windows_hid::HidDevice},
 };
 
 #[cfg(debug_assertions)]
@@ -19,21 +19,28 @@ use super::{BatteryProtocol, BatteryState, ConnectionState, DeviceStatus, Recogn
 pub(crate) enum BatteryPoll {
     Reading(BatteryReading),
     Sleeping,
+    ConnectedUnknown,
+    Disconnected,
+}
+
+enum SessionBackend {
+    Hid(HidDevice),
+    Bluetooth(BluetoothSession),
 }
 
 pub(crate) struct DeviceSession {
     device: RecognizedDevice,
-    hid_device: HidDevice,
+    backend: SessionBackend,
     last_battery: BatteryState,
 }
 
 impl DeviceSession {
     pub(crate) fn open(device: RecognizedDevice) -> io::Result<Self> {
-        let hid_device = HidDevice::open(&device.hardware.device_path)?;
+        let backend = open_backend(&device)?;
 
         Ok(Self {
             device,
-            hid_device,
+            backend,
             last_battery: BatteryState::Unknown,
         })
     }
@@ -43,15 +50,19 @@ impl DeviceSession {
     }
 
     #[cfg(debug_assertions)]
-    pub(crate) const fn report_lengths(&self) -> HidReportLengths {
-        self.hid_device.report_lengths()
+    pub(crate) fn report_lengths(&self) -> Option<HidReportLengths> {
+        match &self.backend {
+            SessionBackend::Hid(hid_device) => Some(hid_device.report_lengths()),
+
+            SessionBackend::Bluetooth(_) => None,
+        }
     }
 
     pub(crate) fn rebind(&mut self, device: RecognizedDevice) -> io::Result<()> {
-        let hid_device = HidDevice::open(&device.hardware.device_path)?;
+        let backend = open_backend(&device)?;
 
         self.device = device;
-        self.hid_device = hid_device;
+        self.backend = backend;
 
         Ok(())
     }
@@ -66,6 +77,13 @@ impl DeviceSession {
             }
 
             Ok(BatteryPoll::Sleeping) => ConnectionState::Sleeping,
+
+            Ok(BatteryPoll::ConnectedUnknown) => {
+                self.last_battery = BatteryState::Unknown;
+                ConnectionState::Connected
+            }
+
+            Ok(BatteryPoll::Disconnected) => ConnectionState::Disconnected,
 
             Err(_error) => {
                 #[cfg(debug_assertions)]
@@ -87,7 +105,24 @@ impl DeviceSession {
     }
 
     pub(crate) fn query_battery(&mut self) -> io::Result<BatteryPoll> {
-        let outcome = match query_once(&self.hid_device, self.device.battery_protocol) {
+        if let SessionBackend::Bluetooth(bluetooth_session) = &self.backend {
+            let status = bluetooth_session.poll()?;
+
+            if !status.connected {
+                return Ok(BatteryPoll::Disconnected);
+            }
+
+            return match status.battery_level {
+                Some(level) => Ok(BatteryPoll::Reading(BatteryReading {
+                    level,
+                    charging: false,
+                })),
+
+                None => Ok(BatteryPoll::ConnectedUnknown),
+            };
+        }
+
+        let outcome = match self.query_hid_once() {
             Ok(outcome) => outcome,
 
             Err(first_error) => {
@@ -99,11 +134,21 @@ impl DeviceSession {
 
                 self.recover_from_io_failure(&first_error)?;
 
-                query_once(&self.hid_device, self.device.battery_protocol)?
+                self.query_hid_once()?
             }
         };
 
         Ok(outcome)
+    }
+
+    fn query_hid_once(&self) -> io::Result<BatteryPoll> {
+        let SessionBackend::Hid(hid_device) = &self.backend else {
+            return Err(io::Error::other(
+                "Bluetooth session cannot perform a HID query",
+            ));
+        };
+
+        query_once(hid_device, self.device.battery_protocol)
     }
 
     fn recover_from_io_failure(&mut self, first_error: &io::Error) -> io::Result<()> {
@@ -128,19 +173,19 @@ impl DeviceSession {
             })?;
 
         let replacement_handle =
-    HidDevice::open(&replacement.device_path).map_err(
-        |reopen_error| {
-            io::Error::new(
-                reopen_error.kind(),
-                format!(
-                    "HID query failed ({first_error}); rediscovered device could not be opened ({reopen_error})"
-                ),
-            )
-        },
-    )?;
+            HidDevice::open(&replacement.device_path).map_err(
+                |reopen_error| {
+                    io::Error::new(
+                        reopen_error.kind(),
+                        format!(
+                            "HID query failed ({first_error}); rediscovered device could not be opened ({reopen_error})"
+                        ),
+                    )
+                },
+            )?;
 
         self.device.hardware = replacement;
-        self.hid_device = replacement_handle;
+        self.backend = SessionBackend::Hid(replacement_handle);
 
         #[cfg(debug_assertions)]
         eprintln!(
@@ -149,6 +194,19 @@ impl DeviceSession {
         );
 
         Ok(())
+    }
+}
+
+fn open_backend(device: &RecognizedDevice) -> io::Result<SessionBackend> {
+    match device.hardware.transport {
+        Transport::UsbHid => Ok(SessionBackend::Hid(HidDevice::open(
+            &device.hardware.device_path,
+        )?)),
+
+        Transport::Bluetooth => Ok(SessionBackend::Bluetooth(BluetoothSession::open(
+            &device.hardware.hardware_key,
+            &device.hardware.device_path,
+        )?)),
     }
 }
 

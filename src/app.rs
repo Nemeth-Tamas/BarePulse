@@ -118,12 +118,11 @@ fn to_config_device(recognized: &RecognizedDevice) -> DiscoveredDevice {
 fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
     devices
         .iter()
-        .filter(|device| device.hardware.transport == Transport::UsbHid)
         .filter_map(|device| match DeviceSession::open(device.clone()) {
             Ok(session) => Some(session),
 
             Err(error) => {
-                eprintln!("BarePulse HID open failed: {}: {error}", device.name);
+                eprintln!("BarePulse device open failed: {}: {error}", device.name);
 
                 None
             }
@@ -135,7 +134,6 @@ fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
 fn open_device_sessions(devices: &[RecognizedDevice]) -> Vec<DeviceSession> {
     devices
         .iter()
-        .filter(|device| device.hardware.transport == Transport::UsbHid)
         .filter_map(|device| DeviceSession::open(device.clone()).ok())
         .collect()
 }
@@ -315,12 +313,21 @@ fn poll_device_statuses(sessions: &mut [DeviceSession]) -> Vec<DeviceStatus> {
 #[cfg(debug_assertions)]
 fn log_device_sessions(sessions: &[DeviceSession], statuses: &[DeviceStatus]) {
     for (session, status) in sessions.iter().zip(statuses) {
-        let report_lengths = session.report_lengths();
+        match session.report_lengths() {
+            Some(report_lengths) => {
+                eprintln!(
+                    "BarePulse HID open: {} input={} output={} feature={}",
+                    status.name,
+                    report_lengths.input,
+                    report_lengths.output,
+                    report_lengths.feature,
+                );
+            }
 
-        eprintln!(
-            "BarePulse HID open: {} input={} output={} feature={}",
-            status.name, report_lengths.input, report_lengths.output, report_lengths.feature,
-        );
+            None => {
+                eprintln!("BarePulse Bluetooth open: {}", status.name);
+            }
+        }
 
         eprintln!(
             "BarePulse status: {} mode={:?} connection={:?} battery={:?}",
@@ -371,6 +378,22 @@ fn run_reconnect_test(sessions: &mut [DeviceSession]) {
                     eprintln!(
                         "BarePulse reconnect test: poll {poll}/{RECONNECT_TEST_POLLS} \
                          {} command=0x{command:02X} sleeping",
+                        device_name
+                    );
+                }
+
+                Ok(BatteryPoll::ConnectedUnknown) => {
+                    eprintln!(
+                        "BarePulse reconnect test: poll {poll}/{RECONNECT_TEST_POLLS} \
+                         {} connected with unknown battery",
+                        device_name
+                    );
+                }
+
+                Ok(BatteryPoll::Disconnected) => {
+                    eprintln!(
+                        "BarePulse reconnect test: poll {poll}/{RECONNECT_TEST_POLLS} \
+                         {} disconnected",
                         device_name
                     );
                 }
